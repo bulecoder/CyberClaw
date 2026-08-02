@@ -17,7 +17,7 @@ def _get_safe_path(relative_path: str) -> str:
     # 将目标路径转化为绝对路径
     target_path = os.path.abspath(os.path.join(base_dir, relative_path))
     
-    # 核心防御：目标路径必须以 OFFICE_DIR 开头！
+    # 核心防御：目标路径必须以 OFFICE_DIR 开头！        这里有bug，字符串前缀检查不安全，不是真正的目录包含检查s
     if not target_path.startswith(base_dir):
         raise PermissionError(f"越权拦截：你试图访问沙盒外的路径 '{relative_path}'！你只能在 office 工位内活动。")
     
@@ -41,7 +41,7 @@ def list_office_files(sub_dir: str = "") -> str:
         # 格式化输出，标注是文件还是文件夹
         result = []
         for item in items:
-            item_path = os.path.join(target_dir, item)
+            item_path = os.path.join(target_dir, item)  # 只列出当前一层，不递归不排序，也不区分普通目录和链接
             item_type = "📁" if os.path.isdir(item_path) else "📄"
             result.append(f"{item_type} {item}")
             
@@ -61,7 +61,7 @@ def read_office_file(filepath: str) -> str:
             return f"文件不存在：{filepath}"
         
         with open(target_path, "r", encoding="utf-8") as f:
-            content = f.read()
+            content = f.read()  # 这里看起来也有问题，代码先把整个文件读进内存，然后才截断返回
             # 防爆截断：防止读取几个 G 的日志把 Token 撑爆
             if len(content) > 10000:
                 return content[:10000] + "\n\n...[内容过长，已被安全截断]..."
@@ -98,7 +98,7 @@ def write_office_file(filepath: str, content: str, mode: str = "w") -> str:
         
         with open(target_path, mode, encoding="utf-8") as f:
             # 如果是追加模式，且内容不是以换行符开头，自动补一个换行，防止代码粘连
-            if mode == "a" and not content.startswith("\n"):
+            if mode == "a" and not content.startswith("\n"):    # 追加模式只检查新内容是否以换行开头，没有检查旧文件是否已换行结尾，因此可能多出空行
                 f.write("\n" + content)
             else:
                 f.write(content)
@@ -133,14 +133,14 @@ def execute_office_shell(command: str) -> str:
             if re.search(pattern, command):
                 return f"❌ 权限拒绝：检测到危险的目录跳转指令。你被禁止离开 office 工位！"
 
-        result = subprocess.run(
+        result = subprocess.run(    # 没有显式传入 env，所以默认继承 CyberClaw 的环境变量，继承当前 windows 用户的系统权限和网络能力
             command,
-            shell=True,
-            cwd=OFFICE_DIR,
-            capture_output=True,
+            shell=True, # 命令会交给系统shell解释，因此支持管道、重定向、命令连接、环境变量展开和脚本执行，功能灵活但风险最高
+            cwd=OFFICE_DIR, # 子进程从 office 开始，默认工作目录是office
+            capture_output=True,    # 完整输出先被捕获到内存
             encoding='utf-8',
             errors='replace',
-            timeout=60
+            timeout=60  # 限制等待时间60s
         )
         
         output = f" ● 当前系统: {SYS_OS}\n"

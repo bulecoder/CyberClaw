@@ -10,7 +10,7 @@ from .config import SKILLS_DIR
 from .tools.sandbox_tools import execute_office_shell
 
 
-class DynamicSkillInput(BaseModel):
+class DynamicSkillInput(BaseModel):     # 所有动态 skill 都使用同一参数结构
     mode: str = Field(
         description="必须是 'help' 或 'run'。第一次使用时强烈建议先传入 'help' 阅读说明书。"
     )
@@ -32,12 +32,12 @@ class LazySkillLoader:
     """
     
     def __init__(self, cache_size: int = 50):
-        self._skill_registry: Optional[List[Dict[str, Any]]] = None
-        self._cache_size = cache_size
-        self._last_scan_time = 0
+        self._skill_registry: Optional[List[Dict[str, Any]]] = None     # 最近一次扫描得到的 metadata
+        self._cache_size = cache_size       # 缓存大小，但是下面已经强制限制了最大的大小为50
+        self._last_scan_time = 0            # 最近一次扫描的时间
         self._scan_interval = 60  # 缓存元数据扫描结果60秒
     
-    @lru_cache(maxsize=50)
+    @lru_cache(maxsize=50)      # 启动只读取每个 skill 的前50行，用于生成 Tool metadata。最多缓存50个内容版本
     def _load_skill_content(self, md_path: str, mtime: float) -> str:
         """
         加载技能完整内容（带缓存）
@@ -77,16 +77,16 @@ class LazySkillLoader:
             self._last_scan_time = current_time
             return []
         
-        for item in os.listdir(SKILLS_DIR):
+        for item in os.listdir(SKILLS_DIR):     # 遍历 skill 一级子目录
             folder_path = os.path.join(SKILLS_DIR, item)
             if not os.path.isdir(folder_path):
                 continue
             
-            md_path = os.path.join(folder_path, "SKILL.md")
+            md_path = os.path.join(folder_path, "SKILL.md")     # 优先找 SKILL.md
             if not os.path.exists(md_path):
-                md_path = os.path.join(folder_path, "README.md")
+                md_path = os.path.join(folder_path, "README.md")    # 找不到再找 README.md
             
-            if not os.path.exists(md_path):
+            if not os.path.exists(md_path): # 都没有，目录被跳过
                 continue
             
             try:
@@ -97,7 +97,7 @@ class LazySkillLoader:
                     skills.append({
                         "folder": item,
                         "md_path": md_path,
-                        "mtime": os.path.getmtime(md_path),
+                        "mtime": os.path.getmtime(md_path),     # 文件最后修改时间，后面用于内容缓存键
                         **metadata
                     })
             except Exception as e:
@@ -132,11 +132,11 @@ class LazySkillLoader:
                 
                 content = "\n".join(lines)
             
-            name_match = re.search(r"^name:\s*(.+)$", content, re.MULTILINE)
-            desc_match = re.search(r"^description:\s*(.+)$", content, re.MULTILINE)
+            name_match = re.search(r"^name:\s*(.+)$", content, re.MULTILINE)      # 使用正则
+            desc_match = re.search(r"^description:\s*(.+)$", content, re.MULTILINE) # 只能读取单行的 description 
             
-            raw_name = name_match.group(1).strip() if name_match else os.path.basename(os.path.dirname(md_path))
-            tool_name = re.sub(r'[^a-zA-Z0-9_-]', '_', raw_name)
+            raw_name = name_match.group(1).strip() if name_match else os.path.basename(os.path.dirname(md_path))    # 缺少名称时使用目录名
+            tool_name = re.sub(r'[^a-zA-Z0-9_-]', '_', raw_name)        # 清洗工具名，但可能会导致两个不同skill变成相同工具名
             
             raw_desc = desc_match.group(1).strip() if desc_match else f"提供 {raw_name} 相关功能"
             if (raw_desc.startswith('"') and raw_desc.endswith('"')) or (raw_desc.startswith("'") and raw_desc.endswith("'")):
@@ -161,7 +161,7 @@ class LazySkillLoader:
         Returns:
             LangChain 工具对象
         """
-        def lazy_runner(mode: str, command: str = "") -> str:
+        def lazy_runner(mode: str, command: str = "") -> str:       # 懒加载（help->run）没有被程序强制
             """懒加载执行器：首次调用时才加载完整内容"""
             if mode == "help":
                 # 懒加载：首次调用时才读取完整内容
@@ -172,7 +172,7 @@ class LazySkillLoader:
                 
                 return (
                     f"========== 【{skill_info['raw_name']} 完整说明书】 ==========\n"
-                    f"{skill_content[:3000]}\n"
+                    f"{skill_content[:3000]}\n"     # 读取全文，再截断返回
                     f"====================================\n"
                     f"提示：请根据以上说明，如果觉得能解决问题，就将 mode 设为 'run'，"
                     f"并将拼装好的执行命令填入 command 重新调用。"
@@ -182,7 +182,7 @@ class LazySkillLoader:
                     return "错误：在 'run' 模式下，必须提供 command 参数！"
                 
                 actual_cmd = command.replace("{baseDir}", f"skills/{skill_info['folder']}")
-                return execute_office_shell.invoke({"command": actual_cmd})
+                return execute_office_shell.invoke({"command": actual_cmd})     # 最终执行
             else:
                 return "错误：mode 参数只能是 'help' 或 'run'。"
         
@@ -193,7 +193,7 @@ class LazySkillLoader:
         )
         
         return StructuredTool.from_function(
-            func=lazy_runner,
+            func=lazy_runner,       # 模型看到的是name、description、args_schema，真实执行函数是 lazy_runner 闭包。
             name=skill_info["name"],
             description=mini_description,
             args_schema=DynamicSkillInput

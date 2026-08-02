@@ -54,7 +54,7 @@ def config_wizard():
         return
 
     provider = provider_raw.split(" ")[0].strip()
-    is_openai_compatible = "openai" in provider_raw.lower()
+    is_openai_compatible = "openai" in provider_raw.lower()     # openai 兼容性
 
     model_name = questionary.text(
         "输入指定的模型型号 (如 gpt-4o-mini, qwen-max, glm-4 等):",
@@ -108,15 +108,15 @@ def config_wizard():
     with Status(f"[bold #8d52ff]正在连接 {provider.upper()} 引擎并发送探测包...[/bold #8d52ff]", spinner="dots", spinner_style="#00ffff"):
         try:
             if env_key and api_key:
-                os.environ[env_key] = api_key
+                os.environ[env_key] = api_key   # 把aip_key和base_url写入到 os.environ中，但是没有写到.env中，只是在当前配置进程中临时设置变量
             if base_url:
                 if is_openai_compatible:
                     os.environ["OPENAI_API_BASE"] = base_url
                 else:
                     os.environ[f"{provider.upper()}_BASE_URL"] = base_url
 
-            llm = get_provider(provider_name=provider, model_name=model_name)
-            response = llm.invoke([HumanMessage(content="回复我'收到'。")])
+            llm = get_provider(provider_name=provider, model_name=model_name)   # 这里没有把api_key和base_url作为函数参数传进去，所以get_provider只能从 os.environ 读取
+            response = llm.invoke([HumanMessage(content="回复我'收到'。")])     # 发送探测请求,但是代码没有验证是否真的回到了“收到”，只是验证了调用没有报错
 
             console.print(" [bold #00ffff][ 配置成功!][/bold #00ffff]")
             
@@ -131,12 +131,12 @@ def config_wizard():
 
     logging.getLogger("dotenv.main").setLevel(logging.ERROR)
 
-    unset_key(ENV_PATH, "OPENAI_API_BASE")
+    unset_key(ENV_PATH, "OPENAI_API_BASE")      # 先删除旧 base url
     unset_key(ENV_PATH, "ANTHROPIC_BASE_URL")
     unset_key(ENV_PATH, "OLLAMA_BASE_URL")
 
     if env_key and api_key:
-        set_key(ENV_PATH, env_key, api_key)
+        set_key(ENV_PATH, env_key, api_key)     # 前面探测请求成功以后才写入 .env
         
     if base_url:
         if is_openai_compatible:
@@ -157,7 +157,7 @@ def config_wizard():
 def _show_boot_error():
     console.print(Panel(
         "[bold #00ffff]CyberClaw未完成配置![/bold #00ffff]\n\n"
-        "[#8d52ff]检测到 API Key、模型或Baseurl。请重新执行以下命令完成配置：[/#8d52ff]\n"
+        "[#8d52ff]检测到 API Key、模型或Baseurl。请重新执行以下命令完成配置：[/#8d52ff]\n"  # 这里应该是未检测到 API Key、模型或相关配置
         "[bold #00ffff]cyberclaw config[/bold #00ffff]",
         title="[bold #8d52ff]⚠️ Boot Sequence Failed[/bold #8d52ff]",
         border_style="#8d52ff"
@@ -166,15 +166,15 @@ def _show_boot_error():
 
 @app.command("run")
 def run_agent():
-    load_dotenv(ENV_PATH)
-    provider = os.getenv("DEFAULT_PROVIDER")
+    load_dotenv(ENV_PATH)   # 加载项目根目录 .env
+    provider = os.getenv("DEFAULT_PROVIDER")    # 读取provider和model
     model = os.getenv("DEFAULT_MODEL")
     if not provider or not model:
         _show_boot_error()
         raise typer.Exit()
     if provider != "ollama":
         if provider in ["openai", "aliyun", "z.ai", "tencent", "other"]: 
-            if not os.getenv("OPENAI_API_KEY"):
+            if not os.getenv("OPENAI_API_KEY"): # 这里只检查配置是否存在，不会重新验证key是否有效
                 _show_boot_error()
                 raise typer.Exit()
                 
@@ -183,7 +183,7 @@ def run_agent():
                 _show_boot_error()
                 raise typer.Exit()
         
-    import entry.main as cyberclaw_main
+    import entry.main as cyberclaw_main     # 延迟导入正式入口，配置不完整时，正式 Agent 不会启动
     cyberclaw_main.main()
 
 @app.command("monitor")

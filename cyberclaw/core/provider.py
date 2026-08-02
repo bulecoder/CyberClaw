@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 '''
 多模型适配(Factory)
 '''
-load_dotenv()
+load_dotenv()   # 把.env内容加载进 os.envion
 
 # 各大厂商官方的 OpenAI 兼容接口地址 (当用户未配置 BASE_URL 时作为兜底)
 COMPATIBLE_BASE_URLS = {
@@ -15,7 +15,7 @@ COMPATIBLE_BASE_URLS = {
     "tencent": "https://api.hunyuan.cloud.tencent.com/v1"
 }
 
-def get_provider(
+def get_provider(   # 是模型工厂，创建对应的模型客户端对象
     provider_name: str = "openai", 
     model_name: str = "gpt-4o-mini", 
     temperature: float = 0.0,
@@ -31,14 +31,14 @@ def get_provider(
     if provider_name in ["openai", "aliyun", "dashscope", "z.ai", "tencent", "other"]:
         from langchain_openai import ChatOpenAI
         
-        current_api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        current_api_key = api_key or os.environ.get("OPENAI_API_KEY")   # 显示传入函数的优先级高于python进程中的 OPENAI_API_KEY
         if not current_api_key:
             raise ValueError(f"未找到 API Key！请确保 .env 中配置了 OPENAI_API_KEY")
             
 
         final_base_url = base_url or os.environ.get("OPENAI_API_BASE")
         if not final_base_url:
-            final_base_url = COMPATIBLE_BASE_URLS.get(provider_name) 
+            final_base_url = COMPATIBLE_BASE_URLS.get(provider_name)    # 内置的默认地址保底
 
         return ChatOpenAI(
             model=model_name, 

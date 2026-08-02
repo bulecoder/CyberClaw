@@ -24,23 +24,23 @@ def create_agent_app(
         dynamic_tools = load_dynamic_skills()
         actual_tools = BUILTIN_TOOLS + dynamic_tools
     else:
-        actual_tools = tools
+        actual_tools = tools    # 如果显示传入 tools，则会完全替代默认工具，并不是追加
     
     
-    tool_node = ToolNode(actual_tools)
+    tool_node = ToolNode(actual_tools)  # 创建执行器（工具交给 ToolNode）
 
     llm = get_provider(provider_name=provider_name, model_name=model_name)
-    llm_with_tools = llm.bind_tools(actual_tools)
+    llm_with_tools = llm.bind_tools(actual_tools)   # 把工具描述交给模型，bind_tools不会执行工具，而是把工具名称、描述和参数schema告诉模型
 
     def agent_node(state: AgentState, config: RunnableConfig) -> dict:
         """
         核心大脑：读取状态托盘里的历史消息，决定是直接回答，还是调用工具。
         """
-        thread_id = config.get("configurable", {}).get("thread_id", "system_default")
+        thread_id = config.get("configurable", {}).get("thread_id", "system_default")   # 读取会话ID
 
         raw_messages = state["messages"]
 
-        if raw_messages:
+        if raw_messages:    # 从后往前找连续的 ToolMessage，然后写入审计日志
             recent_tool_msgs = []
             for msg in reversed(raw_messages):
                 if msg.type == "tool":
@@ -56,10 +56,10 @@ def create_agent_app(
                 )
 
         current_summary = state.get("summary", "")
-        final_msgs, discarded_msgs = trim_context_messages(raw_messages, trigger_turns=40, keep_turns=10)
+        final_msgs, discarded_msgs = trim_context_messages(raw_messages, trigger_turns=40, keep_turns=10)   # 上下文裁剪
         state_updates = {}
 
-        if discarded_msgs:
+        if discarded_msgs:  # 如果发生了上下文压缩，将舍弃掉的旧对话提取摘要，融合到上下文摘要里面
             import sys
             print_formatted_text(ANSI("\033[K \033[38;5;141m ● 正在更新上下文记忆... \033[0m"))
             discarded_text = "\n".join([f"{m.type}: {m.content}" for m in discarded_msgs if m.content])
@@ -75,19 +75,19 @@ def create_agent_app(
                 )
         
             # 这里可以用便宜模型
-            new_summary_response = llm.invoke([HumanMessage(content=summary_prompt)], config={"callbacks":[]})
+            new_summary_response = llm.invoke([HumanMessage(content=summary_prompt)], config={"callbacks":[]})  # 这里使用的是llm而不是llm_with_tools，摘要调用没有绑定工具，不会进入工具循环
             active_summary = new_summary_response.content
 
             # 更新摘要
             state_updates["summary"] = active_summary
 
             # 从状态机中删除信息
-            delete_cmds = [RemoveMessage(id=m.id) for m in discarded_msgs if m.id]
+            delete_cmds = [RemoveMessage(id=m.id) for m in discarded_msgs if m.id]  # 这里不是直接操作列表，而是返回一组状态更新命令，之后add_messages reducer处理
             state_updates["messages"] = delete_cmds
         else:
             active_summary = current_summary
 
-        # 读取用户画像
+        # 读取用户画像，用户画像没有缓存在 AgentState中，每次思考前都会重新读取文件
         profile_path = os.path.join(MEMORY_DIR, "user_profile.md")
         profile_content = "暂无记录"
         if os.path.exists(profile_path):
@@ -122,9 +122,9 @@ def create_agent_app(
             sys_prompt += f"\n\n[近期对话上下文]\n{active_summary}\n\n(注：这是系统自动生成的近期沟通摘要，请结合它来理解用户的最新问题)"
 
         msgs_for_llm = [SystemMessage(content=sys_prompt)] + \
-        [m for m in final_msgs if not isinstance(m, SystemMessage)]
+        [m for m in final_msgs if not isinstance(m, SystemMessage)] # 从 final_msgs里面保留所有不是 SystemMessage 的消息，保证最终只有新创建的系统提示词，避免旧的系统消息重复出现s
 
-        for m in msgs_for_llm:
+        for m in msgs_for_llm:  # 清理消息文本中可能导致 UTF-8编码失败的非法字符
             if isinstance(m.content, str):
                 m.content = m.content.encode('utf-8', 'ignore').decode('utf-8')
 
@@ -135,7 +135,7 @@ def create_agent_app(
             message_count=len(msgs_for_llm)
         )
 
-        response = llm_with_tools.invoke(msgs_for_llm)
+        response = llm_with_tools.invoke(msgs_for_llm)  # 对话时调用的是绑定（bind）后的模型
 
         # 解析大模型的回答并记录到日志
         if response.tool_calls:
@@ -155,25 +155,25 @@ def create_agent_app(
 
         if "messages" not in state_updates:
             state_updates["messages"] = []
-        state_updates["messages"].append(response)
+        state_updates["messages"].append(response)  # 状态更新，本轮新 AIMessage也会追加进去
 
-        return state_updates
+        return state_updates    # 返回状态更新
 
-    workflow = StateGraph(AgentState)
+    workflow = StateGraph(AgentState)   # 创建状态图，状态是 AgentState
+
+    # 注册两个节点
+    workflow.add_node("agent", agent_node)  # 把消息发给模型，得到AIMessage
+    workflow.add_node("tools", tool_node)   # 根据AIMessage的 tool_calls 执行本地工具
 
 
-    workflow.add_node("agent", agent_node)
-    workflow.add_node("tools", tool_node)
-
-
-    workflow.add_edge(START, "agent")
+    workflow.add_edge(START, "agent")   # 定义入口
 
     # 每次 agent 思考完，检查它有没有发出工具调用指令。
     # tools_condition 会自动判断：有指令 -> 走向 "tools" 节点；没指令 -> 走向 END。
-    workflow.add_conditional_edges("agent", tools_condition)
+    workflow.add_conditional_edges("agent", tools_condition)    # 定义条件分支
 
-    workflow.add_edge("tools", "agent")
+    workflow.add_edge("tools", "agent")     # tools 后必须回到 agent，工具结果必须回到模型
 
-    app = workflow.compile(checkpointer=checkpointer)
+    app = workflow.compile(checkpointer=checkpointer)   # 编译图
 
     return app

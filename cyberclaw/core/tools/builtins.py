@@ -44,7 +44,7 @@ def save_user_profile(new_content: str) -> str:
     """
     os.makedirs(MEMORY_DIR, exist_ok=True)
     with open(PROFILE_PATH, "w", encoding="utf-8") as f:
-        f.write(new_content)
+        f.write(new_content)    # 整文件覆盖
 
     return "记忆档案已成功覆写更新。新的人设画像已生效。"
 
@@ -113,7 +113,7 @@ def schedule_task(target_time: str, description: str, repeat: str = None, repeat
             f" 你传入的是：{target_time}"
         )
 
-    with tasks_lock:
+    with tasks_lock:    # 进入共享锁
         tasks = []
         if os.path.exists(TASKS_FILE):
             try:
