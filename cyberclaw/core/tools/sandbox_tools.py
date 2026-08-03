@@ -1,12 +1,78 @@
 import os
 from pathlib import Path
+import platform
+import re
+import stat
 import subprocess
+import tempfile
+
 from .base import cyberclaw_tool
 from ..config import OFFICE_DIR
-import re
-import platform
 
 SYS_OS = platform.system()
+_MAX_OFFICE_READ_CHARS = 10_000
+
+
+def _atomic_write_text(target_path: str, content: str) -> None:
+    """Write text to a sibling temp file and atomically replace the target."""
+    parent_dir = os.path.dirname(target_path)
+    existing_mode = None
+    if os.path.isfile(target_path):
+        existing_mode = stat.S_IMODE(os.stat(target_path).st_mode)
+
+    file_descriptor, temp_path = tempfile.mkstemp(
+        dir=parent_dir,
+        prefix=f".{os.path.basename(target_path)}.",
+        suffix=".tmp",
+    )
+    descriptor_open = True
+    try:
+        temp_file = os.fdopen(
+            file_descriptor, "w", encoding="utf-8", newline=""
+        )
+        descriptor_open = False
+        with temp_file:
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+
+        if existing_mode is not None:
+            os.chmod(temp_path, existing_mode)
+        os.replace(temp_path, target_path)
+    except Exception:
+        if descriptor_open:
+            os.close(file_descriptor)
+        if os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        raise
+
+
+def _append_text(target_path: str, content: str) -> None:
+    """Append text with exactly one separator newline when it is needed."""
+    if not content:
+        with open(target_path, "a", encoding="utf-8", newline="") as target_file:
+            target_file.flush()
+            os.fsync(target_file.fileno())
+        return
+
+    needs_separator = False
+    if os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
+        with open(target_path, "rb") as existing_file:
+            existing_file.seek(-1, os.SEEK_END)
+            last_byte = existing_file.read(1)
+        needs_separator = (
+            last_byte not in (b"\n", b"\r")
+            and not content.startswith(("\n", "\r"))
+        )
+
+    payload = f"\n{content}" if needs_separator else content
+    with open(target_path, "a", encoding="utf-8", newline="") as target_file:
+        target_file.write(payload)
+        target_file.flush()
+        os.fsync(target_file.fileno())
 
 def _get_safe_path(relative_path: str) -> str:
     """
@@ -46,14 +112,17 @@ def list_office_files(sub_dir: str = "") -> str:
         if not os.path.exists(target_dir):
             return f"目录不存在：{sub_dir}"
         
-        items = os.listdir(target_dir)
+        if not os.path.isdir(target_dir):
+            return f"路径不是目录：{sub_dir}"
+
+        items = sorted(os.listdir(target_dir), key=str.casefold)
         if not items:
             return f"[{sub_dir if sub_dir else 'office 根目录'}] 是空的。"
         
         # 格式化输出，标注是文件还是文件夹
         result = []
         for item in items:
-            item_path = os.path.join(target_dir, item)  # 只列出当前一层，不递归不排序，也不区分普通目录和链接
+            item_path = os.path.join(target_dir, item)
             item_type = "📁" if os.path.isdir(item_path) else "📄"
             result.append(f"{item_type} {item}")
             
@@ -71,12 +140,16 @@ def read_office_file(filepath: str) -> str:
         target_path = _get_safe_path(filepath)
         if not os.path.exists(target_path):
             return f"文件不存在：{filepath}"
+        if not os.path.isfile(target_path):
+            return f"路径不是普通文件：{filepath}"
         
         with open(target_path, "r", encoding="utf-8") as f:
-            content = f.read()  # 这里看起来也有问题，代码先把整个文件读进内存，然后才截断返回
-            # 防爆截断：防止读取几个 G 的日志把 Token 撑爆
-            if len(content) > 10000:
-                return content[:10000] + "\n\n...[内容过长，已被安全截断]..."
+            content = f.read(_MAX_OFFICE_READ_CHARS + 1)
+            if len(content) > _MAX_OFFICE_READ_CHARS:
+                return (
+                    content[:_MAX_OFFICE_READ_CHARS]
+                    + "\n\n...[内容过长，已被安全截断]..."
+                )
             return content
     except Exception as e:
         return str(e)
@@ -90,13 +163,13 @@ def write_office_file(filepath: str, content: str, mode: str = "w") -> str:
     - filepath: 相对路径，例如 "spider.py" 或 "docs/readme.md"。
     - content: 要写入的具体文本或代码内容。
     - mode: 写入模式。
-        - "w" (默认): 【覆盖/新建】模式。如果文件已存在，将彻底清空原内容并写入新内容！
-        - "a": 【追加】模式。保留原内容，将新内容追加到文件最末尾（常用于写日志或在文件末尾新增函数）。
+        - "w" (默认): 【覆盖/新建】模式。通过同目录临时文件原子替换目标，失败时尽量保留旧文件。
+        - "a": 【追加】模式。保留原内容，并只在新旧内容之间确有需要时补一个换行。
         
     ⚠️ 智能体操作规范：
-    1. 如果你要修改一个长文件中间的某几行，目前最安全的做法是：读取原文件，在你的内存中完成替换，然后用 "w" 模式把【完整的最新代码】重写进去。
-    2. 如果你需要重命名文件或删除文件，请直接使用 execute_office_shell 工具执行 `mv` 或 `rm` 命令。
-    3. 禁止编写 与 跳出office工位 相关的任何语言脚本！
+    1. "w" 会替换整个文件，只能在已经拥有完整目标内容时使用。
+    2. 本工具不支持删除和重命名，不要为了绕过限制而编写或执行脚本。
+    3. 禁止尝试访问 office 工位之外的路径。
     """
     try:
         target_path = _get_safe_path(filepath)
@@ -108,12 +181,10 @@ def write_office_file(filepath: str, content: str, mode: str = "w") -> str:
         # 如果模型想在子目录里写文件，确保子目录存在
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         
-        with open(target_path, mode, encoding="utf-8") as f:
-            # 如果是追加模式，且内容不是以换行符开头，自动补一个换行，防止代码粘连
-            if mode == "a" and not content.startswith("\n"):    # 追加模式只检查新内容是否以换行开头，没有检查旧文件是否已换行结尾，因此可能多出空行
-                f.write("\n" + content)
-            else:
-                f.write(content)
+        if mode == "w":
+            _atomic_write_text(target_path, content)
+        else:
+            _append_text(target_path, content)
                 
         action = "覆盖/新建" if mode == "w" else "追加"
         return f" ● 成功以 {action} 模式写入文件：{filepath} (共 {len(content)} 字符)"

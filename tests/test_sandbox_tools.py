@@ -7,6 +7,7 @@ import tempfile
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from cyberclaw.core.tools.sandbox_tools import (
+    _MAX_OFFICE_READ_CHARS,
     list_office_files,
     read_office_file,
     write_office_file,
@@ -84,7 +85,10 @@ class TestSandboxTools(unittest.TestCase):
 
     @patch('cyberclaw.core.tools.sandbox_tools.os.path.exists', return_value=True)
     @patch('cyberclaw.core.tools.sandbox_tools.os.listdir', return_value=['file1.txt', 'subdir'])
-    @patch('cyberclaw.core.tools.sandbox_tools.os.path.isdir', side_effect=lambda x: x.endswith('subdir'))
+    @patch(
+        'cyberclaw.core.tools.sandbox_tools.os.path.isdir',
+        side_effect=lambda x: not x.endswith('file1.txt'),
+    )
     def test_list_office_files(self, mock_isdir, mock_listdir, mock_exists):
         """测试列出办公文件功能"""
         # 工具需要通过 .invoke() 调用
@@ -104,13 +108,32 @@ class TestSandboxTools(unittest.TestCase):
         result = list_office_files.invoke({"sub_dir": "nonexistent"})
         self.assertIn("目录不存在", result)
 
+    @patch('cyberclaw.core.tools.sandbox_tools.os.path.isfile', return_value=True)
     @patch('cyberclaw.core.tools.sandbox_tools.os.path.exists', return_value=True)
     @patch('builtins.open', new_callable=mock_open, read_data="file content")
-    def test_read_office_file_success(self, mock_file, mock_exists):
+    def test_read_office_file_success(self, mock_file, mock_exists, mock_isfile):
         """测试成功读取办公文件"""
         result = read_office_file.invoke({"filepath": "test.txt"})
         self.assertEqual(result, "file content")
         mock_file.assert_called_once()
+        mock_file().read.assert_called_once_with(_MAX_OFFICE_READ_CHARS + 1)
+
+    @patch('cyberclaw.core.tools.sandbox_tools.os.path.isfile', return_value=True)
+    @patch('cyberclaw.core.tools.sandbox_tools.os.path.exists', return_value=True)
+    @patch(
+        'builtins.open',
+        new_callable=mock_open,
+        read_data="x" * (_MAX_OFFICE_READ_CHARS + 1),
+    )
+    def test_read_office_file_reads_only_bounded_preview(
+        self, mock_file, mock_exists, mock_isfile
+    ):
+        """读取大文件时只请求返回上限附近的内容。"""
+        result = read_office_file.invoke({"filepath": "large.log"})
+
+        self.assertIn("内容过长，已被安全截断", result)
+        self.assertEqual(result.count("x"), _MAX_OFFICE_READ_CHARS)
+        mock_file().read.assert_called_once_with(_MAX_OFFICE_READ_CHARS + 1)
 
     @patch('cyberclaw.core.tools.sandbox_tools.os.path.exists', return_value=False)
     def test_read_office_file_nonexistent(self, mock_exists):
@@ -118,14 +141,90 @@ class TestSandboxTools(unittest.TestCase):
         result = read_office_file.invoke({"filepath": "nonexistent.txt"})
         self.assertIn("文件不存在", result)
 
-    @patch('builtins.open', new_callable=mock_open)
-    @patch('os.makedirs')
-    def test_write_office_file_success(self, mock_makedirs, mock_file):
-        """测试成功写入办公文件"""
-        result = write_office_file.invoke({"filepath": "test.txt", "content": "test content", "mode": "w"})
-        self.assertIn("成功以 覆盖/新建 模式写入文件", result)
-        mock_file.assert_called_once()
-        mock_makedirs.assert_called_once()
+    def test_write_office_file_success(self):
+        """覆盖模式通过真实临时目录写入完整内容。"""
+        with tempfile.TemporaryDirectory() as office_dir:
+            with patch(
+                'cyberclaw.core.tools.sandbox_tools.OFFICE_DIR', office_dir
+            ):
+                result = write_office_file.invoke({
+                    "filepath": "docs/test.txt",
+                    "content": "test content",
+                    "mode": "w",
+                })
+
+            target_path = os.path.join(office_dir, "docs", "test.txt")
+            self.assertIn("成功以 覆盖/新建 模式写入文件", result)
+            with open(target_path, "r", encoding="utf-8") as target_file:
+                self.assertEqual(target_file.read(), "test content")
+
+    def test_write_office_file_preserves_old_file_when_replace_fails(self):
+        """原子替换失败时保留旧内容并清理临时文件。"""
+        with tempfile.TemporaryDirectory() as office_dir:
+            target_path = os.path.join(office_dir, "test.txt")
+            with open(target_path, "w", encoding="utf-8") as target_file:
+                target_file.write("old content")
+
+            with patch(
+                'cyberclaw.core.tools.sandbox_tools.OFFICE_DIR', office_dir
+            ), patch(
+                'cyberclaw.core.tools.sandbox_tools.os.replace',
+                side_effect=OSError("replace failed"),
+            ):
+                result = write_office_file.invoke({
+                    "filepath": "test.txt",
+                    "content": "new content",
+                    "mode": "w",
+                })
+
+            self.assertIn("replace failed", result)
+            with open(target_path, "r", encoding="utf-8") as target_file:
+                self.assertEqual(target_file.read(), "old content")
+            self.assertEqual(os.listdir(office_dir), ["test.txt"])
+
+    def test_write_office_file_append_newline_semantics(self):
+        """追加模式不产生开头空行或重复空行。"""
+        with tempfile.TemporaryDirectory() as office_dir:
+            target_path = os.path.join(office_dir, "test.txt")
+            tool_path = 'cyberclaw.core.tools.sandbox_tools.OFFICE_DIR'
+
+            with patch(tool_path, office_dir):
+                write_office_file.invoke({
+                    "filepath": "test.txt", "content": "first", "mode": "a"
+                })
+                write_office_file.invoke({
+                    "filepath": "test.txt", "content": "second", "mode": "a"
+                })
+                write_office_file.invoke({
+                    "filepath": "test.txt", "content": "\nthird", "mode": "a"
+                })
+
+            with open(target_path, "r", encoding="utf-8", newline="") as target_file:
+                self.assertEqual(target_file.read(), "first\nsecond\nthird")
+
+            with open(target_path, "w", encoding="utf-8", newline="") as target_file:
+                target_file.write("line\n")
+            with patch(tool_path, office_dir):
+                write_office_file.invoke({
+                    "filepath": "test.txt", "content": "next", "mode": "a"
+                })
+            with open(target_path, "r", encoding="utf-8", newline="") as target_file:
+                self.assertEqual(target_file.read(), "line\nnext")
+
+    def test_write_office_file_empty_append_creates_empty_file(self):
+        """向不存在的文件追加空内容时，成功结果与文件状态保持一致。"""
+        with tempfile.TemporaryDirectory() as office_dir:
+            with patch(
+                'cyberclaw.core.tools.sandbox_tools.OFFICE_DIR', office_dir
+            ):
+                result = write_office_file.invoke({
+                    "filepath": "empty.txt", "content": "", "mode": "a"
+                })
+
+            target_path = os.path.join(office_dir, "empty.txt")
+            self.assertIn("成功以 追加 模式写入文件", result)
+            self.assertTrue(os.path.isfile(target_path))
+            self.assertEqual(os.path.getsize(target_path), 0)
 
     def test_write_office_file_invalid_mode(self):
         """测试写入办公文件 - 无效模式"""
