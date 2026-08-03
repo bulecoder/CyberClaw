@@ -76,7 +76,7 @@ CyberClaw
 | Agent Harness | 模型周围负责工具、上下文、权限、状态和生命周期的工程系统 | Runtime、Tool Registry、Policy、Context、Memory、MCP、Trace |
 | Agent Workbench | 将 Harness 能力提供给用户操作、配置和观察的产品形态 | CLI，以及未来可能增加的会话、审批、监控和能力管理界面 |
 
-“本地”不等于必须使用本地大模型。当前通过学校提供的 OpenAI-compatible API 调用 DeepSeek，模型推理发生在远程服务，但 CyberClaw 的 Runtime、工具和数据仍主要位于个人电脑上，所以仍属于本地 Agent。
+“本地”不等于必须使用本地大模型。当前通过学校提供的 OpenAI-compatible API 调用 `.env` 中选择的远程模型，模型推理发生在远程服务，但 CyberClaw 的 Runtime、工具和数据仍主要位于个人电脑上，所以仍属于本地 Agent。
 
 ### 2.4 改进后的技术定位、产品定位与参考场景
 
@@ -145,7 +145,7 @@ Session-aware Runtime
 - 项目本地 `.venv`，继续与 uv 工作流兼容，不修改用户目录中的 Python/Conda 环境；
 - 当前项目 `.env` 中已经配置好的 Provider、模型、学校 API Base URL 和 API Key；
 - 当前使用的 OpenAI-compatible 接入方式；
-- 当前已验证可用的 `SDU-AI/DeepSeek-V4-Flash` 模型；
+- 当前 `.env` 中已经配置并验证可用的模型；模型可以由用户按需切换，不能在重构代码中写死；
 - 现有 `cyberclaw config`、`cyberclaw run` 和项目入口；
 - 已经验证过的普通对话、时间、calculator、office 文件写入与读取流程。
 
@@ -528,7 +528,7 @@ Observability
 → 当前 .env 配置可被正确读取
 → cyberclaw 可以正常启动
 → 基本对话与低风险工具冒烟测试通过
-→ 涉及模型主链时，当前学校 API + DeepSeek 模型最小真实调用通过
+→ 涉及模型主链时，当前学校 API + `.env` 所选模型的最小真实调用通过
 → 确认 API Key 未进入日志、文档和 Git diff
 ```
 

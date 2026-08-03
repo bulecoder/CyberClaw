@@ -1,9 +1,13 @@
+import ast
 from datetime import datetime
-from .base import cyberclaw_tool, CyberClawBaseTool
+import math
+import operator
 import os
 import json
 import uuid
 import threading
+
+from .base import cyberclaw_tool
 from ..config import MEMORY_DIR, TASKS_FILE
 from .sandbox_tools import (
     list_office_files,
@@ -15,6 +19,83 @@ from .sandbox_tools import (
 
 tasks_lock = threading.Lock()
 PROFILE_PATH = os.path.join(MEMORY_DIR, "user_profile.md")
+
+
+_CALCULATOR_BINARY_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+_CALCULATOR_UNARY_OPERATORS = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
+_MAX_EXPRESSION_LENGTH = 200
+_MAX_AST_NODES = 64
+_MAX_POWER_EXPONENT = 1000
+_MAX_INTEGER_BITS = 4096
+
+
+class CalculatorExpressionError(ValueError):
+    """Raised when a calculator expression is outside the safe subset."""
+
+
+def _validate_calculator_number(value: object) -> int | float:
+    """Validate literals and intermediate results produced by the calculator."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise CalculatorExpressionError("只允许整数和浮点数")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise CalculatorExpressionError("计算结果必须是有限数值")
+    if isinstance(value, int) and value.bit_length() > _MAX_INTEGER_BITS:
+        raise CalculatorExpressionError("计算结果过大")
+    return value
+
+
+def _evaluate_calculator_node(node: ast.AST) -> int | float:
+    if isinstance(node, ast.Constant):
+        return _validate_calculator_number(node.value)
+
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _CALCULATOR_UNARY_OPERATORS:
+        operand = _evaluate_calculator_node(node.operand)
+        return _validate_calculator_number(
+            _CALCULATOR_UNARY_OPERATORS[type(node.op)](operand)
+        )
+
+    if isinstance(node, ast.BinOp) and type(node.op) in _CALCULATOR_BINARY_OPERATORS:
+        left = _evaluate_calculator_node(node.left)
+        right = _evaluate_calculator_node(node.right)
+        if isinstance(node.op, ast.Pow) and abs(right) > _MAX_POWER_EXPONENT:
+            raise CalculatorExpressionError(
+                f"幂指数绝对值不能超过 {_MAX_POWER_EXPONENT}"
+            )
+        result = _CALCULATOR_BINARY_OPERATORS[type(node.op)](left, right)
+        return _validate_calculator_number(result)
+
+    raise CalculatorExpressionError("表达式包含不支持的语法")
+
+
+def _safe_calculate(expression: str) -> int | float:
+    """Evaluate a small arithmetic-only expression without executing Python code."""
+    if not isinstance(expression, str) or not expression.strip():
+        raise CalculatorExpressionError("表达式不能为空")
+    if len(expression) > _MAX_EXPRESSION_LENGTH:
+        raise CalculatorExpressionError(
+            f"表达式长度不能超过 {_MAX_EXPRESSION_LENGTH} 个字符"
+        )
+
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise CalculatorExpressionError("表达式语法错误") from exc
+
+    if sum(1 for _ in ast.walk(tree)) > _MAX_AST_NODES:
+        raise CalculatorExpressionError("表达式过于复杂")
+
+    return _evaluate_calculator_node(tree.body)
 
 
 @cyberclaw_tool
@@ -63,14 +144,12 @@ def get_current_time() -> str:
 def calculator(expression: str) -> str:
     """
     一个简单的数学计算器。
-    用于计算基础的数学表达式，例如: '3 * 5' 或 '100 / 4'。
-    注意：参数 expression 必须是一个合法的 Python 数学表达式字符串。
+    用于计算只包含数字、括号和基础算术运算符的表达式，
+    例如: '3 * 5'、'100 / 4' 或 '(2 + 3) ** 2'。
+    不支持变量、函数调用、属性访问、容器或任何 Python 代码。
     """
     try:
-        # 警告: eval 在真实的生产环境中存在注入风险！
-        # 这里仅为了搭建核心层做快速 Demo。未来在生产级扩展中，
-        # 应该替换为基于 AST 的安全解析器，或者更专业的数学库（如 numexpr）。
-        result = eval(expression, {"__builtins__": {}}, {})
+        result = _safe_calculate(expression)
         return f"表达式 '{expression}' 的计算结果是: {result}"
     except Exception as e:
         return f"计算出错，请检查表达式格式。错误信息: {str(e)}"

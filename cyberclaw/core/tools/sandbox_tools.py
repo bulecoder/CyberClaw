@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import subprocess
 from .base import cyberclaw_tool
 from ..config import OFFICE_DIR
@@ -9,19 +10,30 @@ SYS_OS = platform.system()
 
 def _get_safe_path(relative_path: str) -> str:
     """
-    将模型传入的相对路径转换为绝对路径，并死死检查它是否越界！
-    如果模型尝试传入 "../../etc/passwd"，这里会直接把它拦截。
+    将相对于 office 的路径转换为规范绝对路径，并验证最终落点。
+
+    resolve(strict=False) 会解析已经存在的符号链接或 Junction，
+    relative_to() 则按真实路径组成部分判断包含关系，避免字符串前缀误判。
     """
-    # 将 OFFICE_DIR 转化为标准绝对路径
-    base_dir = os.path.abspath(OFFICE_DIR)
-    # 将目标路径转化为绝对路径
-    target_path = os.path.abspath(os.path.join(base_dir, relative_path))
-    
-    # 核心防御：目标路径必须以 OFFICE_DIR 开头！        这里有bug，字符串前缀检查不安全，不是真正的目录包含检查s
-    if not target_path.startswith(base_dir):
-        raise PermissionError(f"越权拦截：你试图访问沙盒外的路径 '{relative_path}'！你只能在 office 工位内活动。")
-    
-    return target_path
+    if not isinstance(relative_path, str):
+        raise TypeError("路径必须是字符串")
+
+    base_dir = Path(OFFICE_DIR).resolve(strict=False)
+    requested_path = Path(relative_path)
+    if requested_path.is_absolute():
+        raise PermissionError(
+            f"越权拦截：禁止使用绝对路径 '{relative_path}'！你只能在 office 工位内活动。"
+        )
+
+    target_path = (base_dir / requested_path).resolve(strict=False)
+    try:
+        target_path.relative_to(base_dir)
+    except ValueError as exc:
+        raise PermissionError(
+            f"越权拦截：你试图访问 office 外的路径 '{relative_path}'！"
+        ) from exc
+
+    return str(target_path)
 
 @cyberclaw_tool
 def list_office_files(sub_dir: str = "") -> str:

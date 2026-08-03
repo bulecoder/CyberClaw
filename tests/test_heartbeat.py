@@ -15,6 +15,9 @@ class TestHeartbeatPacemaker(unittest.TestCase):
     def setUp(self):
         """每个测试前创建临时任务文件"""
         self.temp_file = tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.json')
+        # Windows 不允许删除或重新打开仍被占用的 NamedTemporaryFile。
+        # 测试只需要它生成的独立路径，因此创建后立即关闭句柄。
+        self.temp_file.close()
         self.original_tasks_file = None
         
         # 保存原始 TASKS_FILE 路径

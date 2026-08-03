@@ -38,7 +38,9 @@ class TestBuiltInTools(unittest.TestCase):
             ("10 * 5", 50),
             ("15 / 3", 5.0),
             ("2 ** 3", 8),
-            ("17 % 5", 2)
+            ("17 % 5", 2),
+            ("17 // 5", 3),
+            ("-(2 + 3) * 4", -20),
         ]
 
         for expr, expected in test_cases:
@@ -53,7 +55,13 @@ class TestBuiltInTools(unittest.TestCase):
             "1 / 0",
             "__import__('os')",
             "import os",
-            "eval('2+2')"
+            "eval('2+2')",
+            "().__class__.__bases__[0].__subclasses__()",
+            "[1, 2][0]",
+            "'a' * 3",
+            "True + 1",
+            "2 ** 1001",
+            "1e309",
         ]
 
         for expr in invalid_expressions:

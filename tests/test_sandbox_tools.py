@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, mock_open
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -34,6 +35,52 @@ class TestSandboxTools(unittest.TestCase):
         """测试路径遍历攻击"""
         with self.assertRaises(PermissionError):
             _get_safe_path('../../forbidden/file.txt')
+
+    def test_get_safe_path_rejects_sibling_with_same_prefix(self):
+        """兄弟目录即使共享 office 前缀也不能通过包含检查。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            office_dir = os.path.join(temp_dir, "office")
+            sibling_dir = os.path.join(temp_dir, "office_backup")
+            os.makedirs(office_dir)
+            os.makedirs(sibling_dir)
+
+            with patch(
+                'cyberclaw.core.tools.sandbox_tools.OFFICE_DIR', office_dir
+            ):
+                with self.assertRaises(PermissionError):
+                    _get_safe_path('../office_backup/secret.txt')
+
+    def test_get_safe_path_rejects_absolute_path(self):
+        """模型不能使用绝对路径绕过 office 根目录。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            office_dir = os.path.join(temp_dir, "office")
+            os.makedirs(office_dir)
+
+            with patch(
+                'cyberclaw.core.tools.sandbox_tools.OFFICE_DIR', office_dir
+            ):
+                with self.assertRaises(PermissionError):
+                    _get_safe_path(os.path.abspath(temp_dir))
+
+    def test_get_safe_path_rejects_symlink_escape(self):
+        """office 内指向外部目录的链接不能形成路径逃逸。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            office_dir = os.path.join(temp_dir, "office")
+            outside_dir = os.path.join(temp_dir, "outside")
+            link_path = os.path.join(office_dir, "outside_link")
+            os.makedirs(office_dir)
+            os.makedirs(outside_dir)
+
+            try:
+                os.symlink(outside_dir, link_path, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"当前系统不允许创建测试符号链接: {exc}")
+
+            with patch(
+                'cyberclaw.core.tools.sandbox_tools.OFFICE_DIR', office_dir
+            ):
+                with self.assertRaises(PermissionError):
+                    _get_safe_path('outside_link/secret.txt')
 
     @patch('cyberclaw.core.tools.sandbox_tools.os.path.exists', return_value=True)
     @patch('cyberclaw.core.tools.sandbox_tools.os.listdir', return_value=['file1.txt', 'subdir'])
