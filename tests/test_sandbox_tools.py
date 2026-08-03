@@ -3,6 +3,7 @@ from unittest.mock import patch, mock_open
 import os
 import sys
 import tempfile
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -231,34 +232,123 @@ class TestSandboxTools(unittest.TestCase):
         result = write_office_file.invoke({"filepath": "test.txt", "content": "test content", "mode": "x"})
         self.assertIn("❌ 错误：mode 参数必须是", result)
 
+    @patch('cyberclaw.core.tools.sandbox_tools.shutil.which', return_value='mock-ls')
     @patch('cyberclaw.core.tools.sandbox_tools.subprocess.run')
-    def test_execute_office_shell_safe_command(self, mock_subprocess):
-        """测试执行安全的 shell 命令"""
-        # Mock subprocess 结果
-        mock_result = mock_subprocess.return_value
-        mock_result.returncode = 0
-        mock_result.stdout = "command output"
-        mock_result.stderr = ""
+    def test_execute_office_shell_uses_argv_and_sanitized_environment(
+        self, mock_subprocess, mock_which
+    ):
+        """显式批准的程序使用 argv 执行，且子进程拿不到 API Key。"""
+        def fake_run(*args, **kwargs):
+            kwargs["stdout"].write(b"command output")
+            return SimpleNamespace(returncode=0)
 
-        result = execute_office_shell.invoke({"command": "ls"})
-        # 输出格式包含前缀空格和中文冒号 - 使用更宽松的匹配
+        mock_subprocess.side_effect = fake_run
+        with tempfile.TemporaryDirectory() as office_dir, patch(
+            'cyberclaw.core.tools.sandbox_tools.OFFICE_DIR', office_dir
+        ), patch.dict(os.environ, {
+            "CYBERCLAW_ENABLE_SHELL": "true",
+            "CYBERCLAW_SHELL_ALLOWED_COMMANDS": "ls",
+            "OPENAI_API_KEY": "should-not-leak",
+            "ANTHROPIC_API_KEY": "should-not-leak",
+        }, clear=False):
+            result = execute_office_shell.invoke({"command": "ls -l"})
+
         self.assertIn("ls", result)
         self.assertIn("command output", result)
+        call_args, call_kwargs = mock_subprocess.call_args
+        self.assertEqual(call_args[0], ['mock-ls', '-l'])
+        self.assertFalse(call_kwargs["shell"])
+        self.assertEqual(call_kwargs["cwd"], os.path.abspath(office_dir))
+        self.assertNotIn("OPENAI_API_KEY", call_kwargs["env"])
+        self.assertNotIn("ANTHROPIC_API_KEY", call_kwargs["env"])
+        self.assertEqual(call_kwargs["env"]["HOME"], os.path.abspath(office_dir))
+
+    @patch('cyberclaw.core.tools.sandbox_tools.subprocess.run')
+    def test_execute_office_shell_is_disabled_by_default(self, mock_subprocess):
+        """没有用户显式授权时，通用程序执行保持关闭。"""
+        with patch.dict(os.environ, {"CYBERCLAW_ENABLE_SHELL": ""}, clear=False):
+            result = execute_office_shell.invoke({"command": "ls"})
+
+        self.assertIn("Shell 执行默认关闭", result)
+        mock_subprocess.assert_not_called()
+
+    @patch('cyberclaw.core.tools.sandbox_tools.subprocess.run')
+    def test_execute_office_shell_rejects_program_outside_allowlist(
+        self, mock_subprocess
+    ):
+        """启用执行器不等于允许模型选择任意程序。"""
+        with patch.dict(os.environ, {
+            "CYBERCLAW_ENABLE_SHELL": "true",
+            "CYBERCLAW_SHELL_ALLOWED_COMMANDS": "python",
+        }, clear=False):
+            result = execute_office_shell.invoke({"command": "git status"})
+
+        self.assertIn("不在 CYBERCLAW_SHELL_ALLOWED_COMMANDS 白名单", result)
+        mock_subprocess.assert_not_called()
 
     def test_execute_office_shell_dangerous_commands(self):
-        """测试执行危险命令会被拦截"""
+        """命令连接、路径逃逸和绝对路径参数都会在执行前被拦截。"""
         dangerous_commands = [
-            "cd ../",
-            "cat /etc/passwd",
+            "ls && whoami",
+            "ls | more",
+            "ls ../",
+            "ls /etc/passwd",
+            "ls C:\\windows\\system32",
             "ls ~",
-            "dir \\",
-            "type C:\\windows\\system32\\config\\sam"
         ]
 
-        for cmd in dangerous_commands:
-            with self.subTest(cmd=cmd):
-                result = execute_office_shell.invoke({"command": cmd})
+        with patch.dict(os.environ, {
+            "CYBERCLAW_ENABLE_SHELL": "true",
+            "CYBERCLAW_SHELL_ALLOWED_COMMANDS": "ls",
+        }, clear=False):
+            for cmd in dangerous_commands:
+                with self.subTest(cmd=cmd):
+                    result = execute_office_shell.invoke({"command": cmd})
+                    self.assertIn("❌ 权限拒绝", result)
+
+    @patch('cyberclaw.core.tools.sandbox_tools.subprocess.run')
+    def test_execute_office_shell_rejects_nested_shell_and_inline_code(
+        self, mock_subprocess
+    ):
+        """白名单也不能重新引入 Shell 或解释器内联代码通道。"""
+        commands = (
+            ("cmd /c dir", "cmd,python"),
+            ("powershell -Command Get-ChildItem", "powershell,python"),
+            ("python -c print(1)", "python"),
+            ("python -m http.server", "python"),
+        )
+
+        for command, allowlist in commands:
+            with self.subTest(command=command), patch.dict(os.environ, {
+                "CYBERCLAW_ENABLE_SHELL": "true",
+                "CYBERCLAW_SHELL_ALLOWED_COMMANDS": allowlist,
+            }, clear=False):
+                result = execute_office_shell.invoke({"command": command})
                 self.assertIn("❌ 权限拒绝", result)
+
+        mock_subprocess.assert_not_called()
+
+    @patch('cyberclaw.core.tools.sandbox_tools.shutil.which', return_value='mock-ls')
+    @patch('cyberclaw.core.tools.sandbox_tools.subprocess.run')
+    def test_execute_office_shell_bounds_returned_output(
+        self, mock_subprocess, mock_which
+    ):
+        """大量子进程输出只返回固定大小的尾部，避免撑爆模型上下文。"""
+        def fake_run(*args, **kwargs):
+            kwargs["stdout"].write(b"x" * 20_000)
+            return SimpleNamespace(returncode=0)
+
+        mock_subprocess.side_effect = fake_run
+        with tempfile.TemporaryDirectory() as office_dir, patch(
+            'cyberclaw.core.tools.sandbox_tools.OFFICE_DIR', office_dir
+        ), patch.dict(os.environ, {
+            "CYBERCLAW_ENABLE_SHELL": "true",
+            "CYBERCLAW_SHELL_ALLOWED_COMMANDS": "ls",
+        }, clear=False):
+            result = execute_office_shell.invoke({"command": "ls"})
+
+        self.assertIn("较早输出已截断", result)
+        self.assertLess(len(result), 17_000)
 
 
 if __name__ == '__main__':

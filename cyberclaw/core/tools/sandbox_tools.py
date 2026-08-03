@@ -1,7 +1,8 @@
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import platform
-import re
+import shlex
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -11,6 +12,31 @@ from ..config import OFFICE_DIR
 
 SYS_OS = platform.system()
 _MAX_OFFICE_READ_CHARS = 10_000
+_MAX_SHELL_COMMAND_CHARS = 2_000
+_MAX_SHELL_ARGUMENTS = 64
+_MAX_SHELL_OUTPUT_BYTES = 16_384
+_SHELL_TIMEOUT_SECONDS = 60
+_SHELL_ENABLED_ENV = "CYBERCLAW_ENABLE_SHELL"
+_SHELL_ALLOWLIST_ENV = "CYBERCLAW_SHELL_ALLOWED_COMMANDS"
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_FORBIDDEN_COMMAND_INTERPRETERS = frozenset({
+    "bash",
+    "cmd",
+    "command",
+    "cscript",
+    "fish",
+    "powershell",
+    "pwsh",
+    "sh",
+    "wscript",
+    "wsl",
+    "zsh",
+})
+_INLINE_CODE_FLAGS = {
+    "node": frozenset({"-e", "--eval", "-p", "--print"}),
+    "python": frozenset({"-c", "-m"}),
+    "py": frozenset({"-c", "-m"}),
+}
 
 
 def _atomic_write_text(target_path: str, content: str) -> None:
@@ -74,6 +100,149 @@ def _append_text(target_path: str, content: str) -> None:
         target_file.flush()
         os.fsync(target_file.fileno())
 
+
+def _normalize_executable_name(executable: str) -> str:
+    """Normalize a bare executable name for allowlist comparisons."""
+    normalized = executable.casefold()
+    if normalized.endswith(".exe"):
+        normalized = normalized[:-4]
+    return normalized
+
+
+def _shell_execution_enabled() -> bool:
+    return os.getenv(_SHELL_ENABLED_ENV, "").strip().casefold() in _TRUE_VALUES
+
+
+def _get_allowed_shell_commands() -> set[str]:
+    raw_allowlist = os.getenv(_SHELL_ALLOWLIST_ENV, "")
+    return {
+        _normalize_executable_name(item.strip())
+        for item in raw_allowlist.split(",")
+        if item.strip()
+    }
+
+
+def _strip_windows_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
+
+
+def _reject_unsafe_argument_path(argument: str) -> None:
+    """Reject obvious path escapes before an approved executable is started."""
+    value = (
+        argument.split("=", 1)[1]
+        if argument.startswith("-") and "=" in argument
+        else argument
+    )
+    normalized = value.replace("\\", "/")
+
+    if ".." in normalized:
+        raise PermissionError("命令参数禁止使用 '..' 跳出 office 工位")
+    if normalized.startswith(("/", "~")) or PureWindowsPath(value).is_absolute():
+        raise PermissionError("命令参数禁止使用绝对路径或用户目录路径")
+
+
+def _parse_restricted_command(command: str) -> tuple[list[str], str]:
+    """Parse an operator-approved command without invoking a system shell."""
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("命令不能为空")
+    if len(command) > _MAX_SHELL_COMMAND_CHARS:
+        raise ValueError(f"命令长度不能超过 {_MAX_SHELL_COMMAND_CHARS} 个字符")
+    control_characters = ("\x00", "\r", "\n", "|", "&", ";", "<", ">")
+    if any(character in command for character in control_characters):
+        raise PermissionError("禁止使用管道、重定向、命令连接符或多行命令")
+
+    try:
+        argv = shlex.split(command, posix=SYS_OS != "Windows")
+    except ValueError as exc:
+        raise ValueError("命令中的引号不完整") from exc
+
+    if SYS_OS == "Windows":
+        argv = [_strip_windows_quotes(value) for value in argv]
+    if not argv:
+        raise ValueError("命令不能为空")
+    if len(argv) > _MAX_SHELL_ARGUMENTS:
+        raise ValueError(f"命令参数不能超过 {_MAX_SHELL_ARGUMENTS - 1} 个")
+
+    executable = argv[0]
+    if (
+        Path(executable).name != executable
+        or PureWindowsPath(executable).name != executable
+        or "/" in executable
+        or "\\" in executable
+    ):
+        raise PermissionError("只能通过白名单中的程序名称执行，不能提供程序路径")
+
+    normalized_executable = _normalize_executable_name(executable)
+    if normalized_executable in _FORBIDDEN_COMMAND_INTERPRETERS:
+        raise PermissionError("禁止启动命令解释器或再次嵌套 Shell")
+
+    allowed_commands = _get_allowed_shell_commands()
+    if not allowed_commands:
+        raise PermissionError(
+            f"Shell 白名单为空，请先配置 {_SHELL_ALLOWLIST_ENV}"
+        )
+    if normalized_executable not in allowed_commands:
+        raise PermissionError(
+            f"程序 '{executable}' 不在 {_SHELL_ALLOWLIST_ENV} 白名单中"
+        )
+
+    flag_group = (
+        "python"
+        if normalized_executable.startswith("python")
+        else normalized_executable
+    )
+    forbidden_flags = _INLINE_CODE_FLAGS.get(flag_group, frozenset())
+    if any(argument.casefold() in forbidden_flags for argument in argv[1:]):
+        raise PermissionError("禁止使用解释器的内联代码或模块执行参数")
+
+    for argument in argv[1:]:
+        _reject_unsafe_argument_path(argument)
+
+    return argv, normalized_executable
+
+
+def _build_restricted_subprocess_env(office_dir: str) -> dict[str, str]:
+    """Build a minimal child environment without model/provider credentials."""
+    safe_names = (
+        "LANG",
+        "LC_ALL",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "WINDIR",
+    )
+    child_env = {
+        name: os.environ[name]
+        for name in safe_names
+        if os.environ.get(name)
+    }
+
+    temp_dir = os.path.join(office_dir, ".tmp")
+    os.makedirs(temp_dir, exist_ok=True)
+    child_env.update({
+        "HOME": office_dir,
+        "USERPROFILE": office_dir,
+        "TEMP": temp_dir,
+        "TMP": temp_dir,
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+    })
+    return child_env
+
+
+def _read_bounded_process_output(stream) -> tuple[str, bool]:
+    """Read only the tail of a temporary output stream into memory."""
+    stream.flush()
+    stream.seek(0, os.SEEK_END)
+    total_bytes = stream.tell()
+    stream.seek(max(0, total_bytes - _MAX_SHELL_OUTPUT_BYTES))
+    output = stream.read(_MAX_SHELL_OUTPUT_BYTES).decode("utf-8", errors="replace")
+    return output.strip(), total_bytes > _MAX_SHELL_OUTPUT_BYTES
+
+
 def _get_safe_path(relative_path: str) -> str:
     """
     将相对于 office 的路径转换为规范绝对路径，并验证最终落点。
@@ -100,6 +269,7 @@ def _get_safe_path(relative_path: str) -> str:
         ) from exc
 
     return str(target_path)
+
 
 @cyberclaw_tool
 def list_office_files(sub_dir: str = "") -> str:
@@ -129,7 +299,8 @@ def list_office_files(sub_dir: str = "") -> str:
         return "\n".join(result)
     except Exception as e:
         return str(e)
-    
+
+
 @cyberclaw_tool
 def read_office_file(filepath: str) -> str:
     """
@@ -153,7 +324,8 @@ def read_office_file(filepath: str) -> str:
             return content
     except Exception as e:
         return str(e)
-    
+
+
 @cyberclaw_tool
 def write_office_file(filepath: str, content: str, mode: str = "w") -> str:
     """
@@ -195,61 +367,64 @@ def write_office_file(filepath: str, content: str, mode: str = "w") -> str:
 @cyberclaw_tool
 def execute_office_shell(command: str) -> str:
     """
-    在 office 工位中执行 Shell 命令。
-    
-    ⚠️ 【极其重要的环境限制】：
-    1. 💻 跨平台注意：当前宿主机可能是 Windows、Linux 或 Mac。请根据你得到的环境反馈，使用对应的原生 Shell 命令（例如 Win 用 dir/del，Linux 用 ls/rm）。如果命令报错，请自行调整重试！
-    2. 这是一个非交互式终端！所有命令必须携带免确认参数（如 -y, --quiet）。
-    3. 禁止使用 cd 命令跳出当前目录，你的活动范围仅限 office。
-    4. [无状态警告] 每次执行都是独立的终端进程！需要进入子目录请使用“命令链”或相对路径。
-    5. 禁止一切形式跳出office工位!!! 例如运行跳出或查看office路径的任何脚本以及其他高危操作。
-    """
-    try:
-        dangerous_patterns = [
-            r"\.\.",                        # 杀招1：拦截所有相对路径越权 (如 ../)
-            r"(?:^|\s|[<>|&;])/",           # 杀招2：Unix 拦截绝对路径 (连 cat </etc/passwd 这种黑客写法也防了)
-            r"(?:^|\s|[<>|&;])~",           # 杀招3：Unix 拦截用户主目录 (防 ~/.ssh/)
-            r"(?:^|\s|[<>|&;])\\",          # 杀招4：Win 拦截根目录 (防 dir \)
-            r"(?i)(?:^|\s|[<>|&;])[a-z]:",  # 杀招5：Win 拦截直接跳盘符及绝对路径 (防 D:, type C:\...)
-        ]
-        for pattern in dangerous_patterns:
-            if re.search(pattern, command):
-                return f"❌ 权限拒绝：检测到危险的目录跳转指令。你被禁止离开 office 工位！"
+    在 office 工位中执行显式启用并列入白名单的单个程序。
 
-        result = subprocess.run(    # 没有显式传入 env，所以默认继承 CyberClaw 的环境变量，继承当前 windows 用户的系统权限和网络能力
-            command,
-            shell=True, # 命令会交给系统shell解释，因此支持管道、重定向、命令连接、环境变量展开和脚本执行，功能灵活但风险最高
-            cwd=OFFICE_DIR, # 子进程从 office 开始，默认工作目录是office
-            capture_output=True,    # 完整输出先被捕获到内存
-            encoding='utf-8',
-            errors='replace',
-            timeout=60  # 限制等待时间60s
+    默认关闭。启用后也不会经过 PowerShell、cmd 或 Bash，不支持管道、
+    重定向、命令连接、绝对路径和父目录跳转。子进程只获得最小化环境，
+    不继承模型 API Key。该能力是受限执行器，不是操作系统级安全沙盒。
+    """
+    if not _shell_execution_enabled():
+        return (
+            "❌ Shell 执行默认关闭。若确有需要，请由用户显式配置 "
+            f"{_SHELL_ENABLED_ENV}=true，并在 {_SHELL_ALLOWLIST_ENV} 中列出允许的程序。"
         )
-        
+
+    try:
+        argv, normalized_executable = _parse_restricted_command(command)
+        office_dir = str(Path(OFFICE_DIR).resolve(strict=False))
+        child_env = _build_restricted_subprocess_env(office_dir)
+        executable_path = shutil.which(argv[0], path=child_env.get("PATH"))
+        if executable_path is None:
+            return f"❌ 执行异常：找不到白名单程序 '{argv[0]}'。"
+
+        with tempfile.TemporaryFile(mode="w+b") as stdout_file, \
+             tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            result = subprocess.run(
+                [executable_path, *argv[1:]],
+                shell=False,
+                cwd=office_dir,
+                env=child_env,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                timeout=_SHELL_TIMEOUT_SECONDS,
+                check=False,
+            )
+            stdout, stdout_truncated = _read_bounded_process_output(stdout_file)
+            stderr, stderr_truncated = _read_bounded_process_output(stderr_file)
+
         output = f" ● 当前系统: {SYS_OS}\n"
-        output += f" ● 执行命令: `{command}`\n"
+        output += f" ● 执行程序: `{normalized_executable}`（{len(argv) - 1} 个参数）\n"
         output += f" ● 退出码 (Exit Code): {result.returncode}\n"
-        
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
-        
-        if result.returncode != 0 and ("prompt" in stderr.lower() or "y/n" in stdout.lower()):
-            output += "\n💡 系统提示：命令可能由于交互式等待而失败。请重试并添加 -y 参数！"
-        
+
         if stdout:
-            output += f"\n[STDOUT]\n{stdout[-2000:] if len(stdout) > 2000 else stdout}"
+            marker = "...[较早输出已截断]...\n" if stdout_truncated else ""
+            output += f"\n[STDOUT]\n{marker}{stdout}"
         if stderr:
-            output += f"\n[STDERR]\n{stderr[-2000:] if len(stderr) > 2000 else stderr}"
-            
+            marker = "...[较早错误输出已截断]...\n" if stderr_truncated else ""
+            output += f"\n[STDERR]\n{marker}{stderr}"
+
         if not stdout and not stderr:
             if result.returncode == 0:
                 output += "\n(静默执行完毕：无终端输出)"
             else:
                 output += "\n(异常退出：Exit Code 非 0，无错误日志输出)"
-            
+
         return output
-        
+
+    except (PermissionError, ValueError) as exc:
+        return f"❌ 权限拒绝：{exc}"
     except subprocess.TimeoutExpired:
-        return "❌ 严重错误：命令执行超时（60s）被熔断！请检查是否有阻塞式交互。"
+        return f"❌ 执行超时：程序运行超过 {_SHELL_TIMEOUT_SECONDS} 秒，已终止。"
     except Exception as e:
         return f"❌ 执行异常：{str(e)}"

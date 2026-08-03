@@ -40,7 +40,7 @@ English Nav: [Quick Start](#-quick-start) · [Core Capabilities](#-core-capabili
 CyberClaw 是一个**企业级透明可控智能体**，重新定义 AI 系统的可信边界：
 
 - **🔍 白盒化决策** → 5 类事件审计 + JSONL 日志 + Rich 监控终端，所有行为可追溯
-- **🛡️ 零信任执行** → 两段式调用（help → run），先看说明书再执行，P0 级事故率降低 80%
+- **🛡️ 受限工作区执行** → 文件路径强制限定；程序执行默认关闭并使用显式白名单
 - **🧠 持续学习** → 双水位记忆系统（长期画像 + 短期摘要），越用越懂你
 - **⚡ 复杂任务编排** → 心跳任务系统 + 可插拔技能 + MCP 服务集成，解放双手
 
@@ -54,9 +54,9 @@ CyberClaw 支持**OpenClaw 技能**和**Claude Code 技能**，可直接使用�
 |------|------|------|
 | **🧠 双水位记忆** | 长期画像 + 短期摘要，持续学习用户偏好 | 越用越懂你，避免重复询问 |
 | **🔍 全行为审计** | 5 类事件实时审计，JSONL 日志 + Rich 监控终端 | 告别黑箱，所有决策可追溯 |
-| **🛡️ 零信任执行** | help → run 两段式调用，先看说明书再执行 | P0 级事故率降低 80%（50% → 10%）|
+| **🛡️ 受限工作区执行** | 文件路径边界 + 默认关闭的程序白名单 | 降低误操作和凭据泄露风险，不宣称 OS 级隔离 |
 | **⏰ 心跳任务引擎** | 后台独立进程，自动执行定时任务 | 解放双手，复杂任务自动化 |
-| **🖥️ 跨平台支持** | Unix + Windows 双平台自适应，LLM 自主选择命令 | 一套代码，全平台运行 |
+| **🖥️ 跨平台支持** | Unix + Windows 路径处理与白名单程序适配 | 一套代码覆盖主要桌面平台 |
 
 ---
 
@@ -84,22 +84,25 @@ CyberClaw 支持**OpenClaw 技能**和**Claude Code 技能**，可直接使用�
   - 支持 daily/weekly/monthly 循环任务
   - 任务持久化存储，重启不丢失
 
-### 🛡️ 安全沙盒
+### 🛡️ 受限工作区
 
 - **跨平台路径拦截**
   - Unix + Windows 双平台越权拦截
   - 禁止 `..`、绝对路径、用户主目录访问
   - 所有操作限制在 `office/` 工位内
 
-- **Shell 命令安全**
-  - 危险命令正则匹配拦截
-  - 60 秒超时熔断
-  - 非交互式执行（必须带 `-y` 等参数）
+- **受限程序执行**
+  - 默认关闭，必须由用户显式启用并配置程序白名单
+  - 使用参数数组直接启动程序，不经过 PowerShell、CMD 或 Bash
+  - 子进程使用最小化环境，不继承模型 API Key
+  - 拒绝管道、重定向、命令连接、绝对路径和父目录跳转
+  - 60 秒超时并限制返回给模型的输出大小
+  - 该能力不是容器或操作系统级安全沙盒
 
 ### 🖥️ 跨平台特性
 
 - **系统信息注入** - 自动识别操作系统，注入平台相关信息
-- **LLM 自主选择命令** - 根据平台特性生成合适的命令（PowerShell / Bash）
+- **白名单程序适配** - 只在用户显式授权后调用当前平台存在的程序
 - **路径格式兼容** - 自动处理 `/` 和 `\` 路径分隔符
 - **环境变量适配** - 跨平台环境变量读取和设置
 
@@ -118,7 +121,7 @@ CyberClaw 支持**OpenClaw 技能**和**Claude Code 技能**，可直接使用�
 | `list_office_files` | 列出文件 | "看看 office 里有什么" |
 | `read_office_file` | 读取文件 | "读取 readme.txt" |
 | `write_office_file` | 写入文件 | "创建 test.py" |
-| `execute_office_shell` | 执行 Shell 命令 | "运行 python test.py" |
+| `execute_office_shell` | 执行用户启用并列入白名单的程序 | "运行 python test.py" |
 
 ### 🎯 可插拔技能
 
@@ -201,6 +204,10 @@ OPENAI_API_KEY=sk-your-api-key-here
 
 # Base URL (可选，使用代理时配置)
 OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
+
+# 可选：受限程序执行默认关闭；仅在你信任待运行程序时开启
+# CYBERCLAW_ENABLE_SHELL=true
+# CYBERCLAW_SHELL_ALLOWED_COMMANDS=python
 ```
 
 **配置说明：**
@@ -210,6 +217,10 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 - `ANTHROPIC_API_KEY`: Anthropic 的 API Key
 - `OPENAI_API_BASE`: 兼容接口的 Base URL（阿里云、腾讯云等）
 - `OLLAMA_BASE_URL`: Ollama 本地服务地址（默认 `http://localhost:11434`）
+- `CYBERCLAW_ENABLE_SHELL`: 是否显式启用受限程序执行（默认关闭）
+- `CYBERCLAW_SHELL_ALLOWED_COMMANDS`: 允许启动的程序名称白名单，使用英文逗号分隔
+
+> ⚠️ **执行边界**：即使显式启用，该能力也只是受限执行器，不是操作系统级沙盒。只应加入你信任的程序；当前 `.env`、Provider、模型和 API Key 配置不需要为此修改。
 
 > 💡 **工作区配置**：工作区路径已在代码中初始化，默认为项目根目录的 `workspace` 文件夹，无需在 `.env` 中配置。仅当需要自定义工作区位置时，才设置 `CYBERCLAW_WORKSPACE` 环境变量。
 
@@ -243,7 +254,7 @@ cyberclaw run
 | 📁 文件操作 | `看看 office 里有什么文件` | 列出工位文件 |
 | 📖 读取文件 | `读取 readme.txt` | 读取文件内容 |
 | 📝 创建文件 | `创建 test.py` | 写入新文件 |
-| 💻 Shell 命令 | `运行 python test.py` | 执行 Shell 命令 |
+| 💻 受限程序 | `运行 python test.py` | 需由用户显式启用并将 `python` 加入白名单 |
 | 🚪 退出 | `/exit` | 退出程序 |
 
 ### ⏰ 心跳任务系统
@@ -281,7 +292,7 @@ cyberclaw monitor
 
 ### 🔒 企业级应用
 - **合规审计** - 5 类事件审计日志，满足企业合规要求
-- **权限管控** - 沙盒隔离 + 路径拦截，防止越权操作
+- **权限管控** - 文件路径边界 + 默认关闭的程序白名单，降低越权风险
 - **任务自动化** - 心跳任务引擎，定时执行重复性工作
 - **知识沉淀** - 双水位记忆系统，持续学习组织偏好
 
@@ -292,12 +303,12 @@ cyberclaw monitor
 - **可扩展架构** - 可插拔技能系统，快速验证新想法
 
 ### 🖥️ 跨平台部署
-- **Windows** - 完整支持 PowerShell + CMD，路径自动适配
-- **Linux** - 原生支持所有发行版，完美兼容 Bash
-- **macOS** - 支持 zsh/bash，与 Unix 工具链无缝集成
+- **Windows** - 支持文件路径处理和显式批准的 Windows 程序
+- **Linux** - 支持文件路径处理和显式批准的 Linux 程序
+- **macOS** - 支持文件路径处理和显式批准的 macOS 程序
 
 ### 🛠️ 开发者工具
-- **本地开发助手** - 文件操作 + Shell 执行，自动化编码任务
+- **本地工作区助手** - 文件操作 + 可选的白名单程序执行
 - **项目监控** - 实时监控 AI 行为，防止意外操作
 - **技能开发** - 支持自定义技能，快速集成新工具
 - **MCP 服务集成** - 连接外部 MCP 服务，扩展能力边界
@@ -340,7 +351,7 @@ cyberclaw monitor
 | **技能加载** | `cyberclaw/core/skill_loader.py` | 动态加载 SKILL.md，两段式调用 |
 | **上下文管理** | `cyberclaw/core/context.py` | 消息修剪，双水位记忆 |
 | **内置工具** | `cyberclaw/core/tools/builtins.py` | 时间/计算/任务调度等 |
-| **沙盒工具** | `cyberclaw/core/tools/sandbox_tools.py` | 文件操作 + Shell 执行 |
+| **工作区工具** | `cyberclaw/core/tools/sandbox_tools.py` | 受限文件操作 + 可选白名单程序执行 |
 | **审计日志** | `cyberclaw/core/logger.py` | JSONL 格式事件记录 |
 | **心跳任务** | `cyberclaw/core/heartbeat.py` | 定时任务检查与触发 |
 
@@ -690,7 +701,7 @@ Made with ❤️ by [@ttguy0707](https://github.com/ttguy0707)
 CyberClaw is an **enterprise-grade transparent and controllable agent** that redefines the trust boundary of AI systems:
 
 - **🔍 White-box decisions** -> 5-category event auditing, JSONL logs, and a Rich monitoring terminal make every action traceable
-- **🛡️ Zero-trust execution** -> two-phase invocation (`help` -> `run`) lets the agent read instructions before execution, reducing P0 incident risk by 80%
+- **🛡️ Restricted workspace execution** -> enforced file boundaries plus program execution that is disabled by default and gated by an explicit allowlist
 - **🧠 Continuous learning** -> dual-watermark memory, combining a long-term profile with short-term summaries, learns your preferences over time
 - **⚡ Complex task orchestration** -> heartbeat tasks, pluggable skills, and MCP service integration automate repetitive work
 
@@ -704,9 +715,9 @@ CyberClaw supports both **OpenClaw skills** and **Claude Code skills**, so you c
 |------|------|------|
 | **🧠 Dual-watermark memory** | Long-term profile + short-term summaries that continuously learn user preferences | Understands you better over time and avoids repeated questions |
 | **🔍 Full behavior auditing** | 5-category real-time event auditing, JSONL logs, and a Rich monitoring terminal | No more black boxes; every decision is traceable |
-| **🛡️ Zero-trust execution** | `help` -> `run` two-phase calls that read the manual before execution | Reduces P0 incident risk by 80% (50% -> 10%) |
+| **🛡️ Restricted workspace execution** | File-path boundaries plus a disabled-by-default program allowlist | Reduces accidental actions and credential exposure without claiming OS isolation |
 | **⏰ Heartbeat task engine** | Independent background process for scheduled tasks | Automates complex and repetitive tasks |
-| **🖥️ Cross-platform support** | Adaptive support for Unix and Windows, with LLM-selected commands | One codebase runs across platforms |
+| **🖥️ Cross-platform support** | Unix and Windows path handling plus allowlisted program adaptation | One codebase covers major desktop platforms |
 
 ---
 
@@ -734,22 +745,25 @@ CyberClaw supports both **OpenClaw skills** and **Claude Code skills**, so you c
   - Supports daily, weekly, and monthly recurring tasks
   - Persistent task storage survives restarts
 
-### 🛡️ Security Sandbox
+### 🛡️ Restricted Workspace
 
 - **Cross-platform path interception**
   - Blocks unauthorized access on both Unix and Windows
   - Forbids `..`, absolute paths, and user home directory access
   - Restricts all operations to the `office/` workspace
 
-- **Shell command safety**
-  - Blocks dangerous commands with regex matching
-  - Enforces a 60-second timeout circuit breaker
-  - Runs commands non-interactively and requires flags such as `-y` when needed
+- **Restricted program execution**
+  - Disabled by default; users must explicitly enable it and configure an executable allowlist
+  - Starts argv directly without PowerShell, CMD, or Bash
+  - Uses a minimal child environment that excludes model API keys
+  - Rejects pipes, redirects, command chaining, absolute paths, and parent traversal
+  - Enforces a 60-second timeout and bounds output returned to the model
+  - This capability is not a container or OS-level security sandbox
 
 ### 🖥️ Cross-platform Capabilities
 
 - **System information injection** - automatically detects the operating system and injects platform-specific context
-- **LLM-selected commands** - generates suitable commands based on the platform, such as PowerShell or Bash
+- **Allowlisted program adaptation** - invokes platform programs only after explicit user authorization
 - **Path format compatibility** - automatically handles `/` and `\` path separators
 - **Environment variable adaptation** - reads and sets environment variables across platforms
 
@@ -768,7 +782,7 @@ CyberClaw supports both **OpenClaw skills** and **Claude Code skills**, so you c
 | `list_office_files` | List files | "Show me what is in office" |
 | `read_office_file` | Read a file | "Read readme.txt" |
 | `write_office_file` | Write a file | "Create test.py" |
-| `execute_office_shell` | Run a shell command | "Run python test.py" |
+| `execute_office_shell` | Run a user-enabled, allowlisted program | "Run python test.py" |
 
 ### 🎯 Pluggable Skills
 
@@ -851,6 +865,10 @@ OPENAI_API_KEY=sk-your-api-key-here
 
 # Base URL. Optional; configure it when using a proxy or compatible endpoint.
 OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
+
+# Optional: restricted program execution is disabled by default
+# CYBERCLAW_ENABLE_SHELL=true
+# CYBERCLAW_SHELL_ALLOWED_COMMANDS=python
 ```
 
 **Configuration reference:**
@@ -860,6 +878,10 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 - `ANTHROPIC_API_KEY`: Anthropic API key
 - `OPENAI_API_BASE`: Base URL for compatible APIs such as Alibaba Cloud or Tencent Cloud
 - `OLLAMA_BASE_URL`: local Ollama service URL, defaulting to `http://localhost:11434`
+- `CYBERCLAW_ENABLE_SHELL`: explicitly enable restricted program execution; disabled by default
+- `CYBERCLAW_SHELL_ALLOWED_COMMANDS`: comma-separated allowlist of executable names
+
+> ⚠️ **Execution boundary**: even when enabled, this is a restricted executor rather than an OS-level sandbox. Only allow programs you trust. Existing `.env` provider, model, and API-key settings do not need to change.
 
 > 💡 **Workspace configuration**: the workspace path is initialized in code and defaults to the `workspace` folder in the project root. You do not need to configure it in `.env`. Set the `CYBERCLAW_WORKSPACE` environment variable only when you need a custom workspace path.
 
@@ -893,7 +915,7 @@ After startup, CyberClaw enters the interactive chat interface:
 | 📁 File operations | `Show me the files in office` | List workspace files |
 | 📖 Read file | `Read readme.txt` | Read file content |
 | 📝 Create file | `Create test.py` | Write a new file |
-| 💻 Shell command | `Run python test.py` | Execute a shell command |
+| 💻 Restricted program | `Run python test.py` | Requires explicit enablement and `python` in the allowlist |
 | 🚪 Exit | `/exit` | Exit the program |
 
 ### ⏰ Heartbeat Task System
@@ -931,7 +953,7 @@ cyberclaw monitor
 
 ### 🔒 Enterprise Applications
 - **Compliance auditing** - 5-category event audit logs for enterprise compliance requirements
-- **Permission control** - sandbox isolation and path interception prevent unauthorized operations
+- **Permission control** - file-path boundaries plus a disabled-by-default program allowlist reduce unauthorized actions
 - **Task automation** - heartbeat task engine executes repetitive work on schedule
 - **Knowledge accumulation** - dual-watermark memory continuously learns organizational preferences
 
@@ -942,12 +964,12 @@ cyberclaw monitor
 - **Extensible architecture** - pluggable skills make it easy to validate new ideas
 
 ### 🖥️ Cross-platform Deployment
-- **Windows** - full support for PowerShell and CMD with automatic path adaptation
-- **Linux** - native support for all distributions and Bash compatibility
-- **macOS** - supports zsh/bash and integrates naturally with Unix toolchains
+- **Windows** - supports file-path handling and explicitly approved Windows programs
+- **Linux** - supports file-path handling and explicitly approved Linux programs
+- **macOS** - supports file-path handling and explicitly approved macOS programs
 
 ### 🛠️ Developer Tools
-- **Local development assistant** - file operations and shell execution for automated coding tasks
+- **Local workspace assistant** - file operations plus optional allowlisted program execution
 - **Project monitoring** - monitor AI behavior in real time to prevent unexpected operations
 - **Skill development** - supports custom skills for fast tool integration
 - **MCP service integration** - connects external MCP services to extend capability boundaries
@@ -990,7 +1012,7 @@ cyberclaw monitor
 | **Skill loading** | `cyberclaw/core/skill_loader.py` | Dynamically loads SKILL.md with two-phase invocation |
 | **Context management** | `cyberclaw/core/context.py` | Message trimming and dual-watermark memory |
 | **Built-in tools** | `cyberclaw/core/tools/builtins.py` | Time, calculation, task scheduling, and more |
-| **Sandbox tools** | `cyberclaw/core/tools/sandbox_tools.py` | File operations and shell execution |
+| **Workspace tools** | `cyberclaw/core/tools/sandbox_tools.py` | Restricted file operations plus optional allowlisted program execution |
 | **Audit logging** | `cyberclaw/core/logger.py` | JSONL event logging |
 | **Heartbeat tasks** | `cyberclaw/core/heartbeat.py` | Scheduled task checking and triggering |
 

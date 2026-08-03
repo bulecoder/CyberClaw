@@ -200,11 +200,11 @@ Path.resolve(strict=False)
 
 来源：问题由 CyberClaw 审计发现；“输入规范化 + 最终落点校验”的纵深防御参考 `[CC]` Session 路径设计。
 
-### P0-2 `run_shell` 不是安全沙盒 `[CCL]`
+### P0-2 通用 Shell 不是安全沙盒 `[CCL]`（第一轮修复已完成）
 
-位置：`cyberclaw/core/tools/sandbox_tools.py::run_shell()`
+位置：`cyberclaw/core/tools/sandbox_tools.py::execute_office_shell()`
 
-当前特征：
+原始实现存在以下问题：
 
 - `subprocess.run(..., shell=True)`；
 - 继承当前用户权限和包含 API Key 的进程环境；
@@ -212,7 +212,17 @@ Path.resolve(strict=False)
 - 没有网络隔离、资源限制、低权限账户和进程树清理；
 - 可通过变量、脚本、编码、解释器、链接和子进程绕过字符串规则。
 
-短期改进：默认关闭通用 Shell；仅允许经过审批的受限命令；使用 `shell=False` argv、环境变量白名单、固定 cwd、超时、输出上限和进程树终止。
+已完成的第一轮修复：
+
+- 通用程序执行默认关闭，必须由用户显式启用；
+- 通过配置白名单限定可启动程序；
+- 使用 `shell=False` 和 argv 直接执行，禁止 PowerShell、CMD、Bash 等嵌套 Shell；
+- 拒绝管道、重定向、命令连接、绝对路径、父目录跳转和解释器内联代码参数；
+- 使用固定 office cwd 和最小化子进程环境，不继承模型 API Key；
+- 保留超时，并限制返回给模型的 stdout/stderr 大小；
+- 增加默认关闭、白名单、参数边界、环境脱敏和输出截断回归测试。
+
+当前边界：配置白名单属于用户显式授权，不等于对被允许程序本身做了操作系统隔离。进程树清理、网络/资源限制和逐次人工审批将在后续 Tool Policy/Approval 阶段继续实现。
 
 长期改进：需要更强隔离时，将执行器移到低权限 worker、容器或虚拟化沙盒。完成前只能称为“受限工作区执行器”，不能称为严格安全沙盒。
 
@@ -443,7 +453,7 @@ Monitor 不显示 `ai_message`，却保留从未产生的 `system_action` 分支
 | 文档描述 | 实际实现 | 处理建议 |
 |---|---|---|
 | 已集成 MCP 服务/可调用 MCP | 仓库没有 MCP client/runtime、连接配置或协议依赖 | 暂改为“规划中”；真实实现后再写支持的 transport 和边界 |
-| 严格安全沙盒、零信任、阻止未授权操作 | 当前是 office 路径字符串判断、Shell 正则和 Prompt 约束 | 改为“受限工作区与防误操作规则”，不宣称 OS 隔离 |
+| 严格安全沙盒、零信任、阻止未授权操作 | 已实现真实路径边界和默认关闭的程序白名单，但仍没有 OS 隔离、网络限制和逐次审批 | 使用“受限工作区与防误操作规则”，不宣称 OS 隔离 |
 | 五类完整日志事件 | 实际主要产生 `llm_input/tool_call/tool_result/ai_message`；`system_action` 未产生 | 统一事件 schema、Logger 和 Monitor |
 | 记录全部行为/完整决策轨迹 | `llm_input` 仅有消息数量，缺少模型调用、审批、用量和 span | 改为有限事件日志；完成 trace 后再升级声明 |
 | Heartbeat 独立后台进程，主程序退出后仍工作 | 实际是在 `entry/main.py` 内创建的协程，没有独立服务入口 | 改为“随 CLI 生命周期运行的后台协程”，或真正拆独立 scheduler |
