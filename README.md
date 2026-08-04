@@ -76,6 +76,11 @@ CyberClaw 当前只原生支持本项目定义的 Markdown Skill 格式。OpenCl
   - CLI 取消正在运行的任务时，为 Checkpoint 末尾未配对的 `tool_calls` 补写结构化 `interrupted` 结果
   - 回填保证后续模型请求的消息协议完整，但不能保证已进入同步线程或外部程序的副作用立即停止
 
+- **受控工具并行**
+  - 只并行同一模型响应中连续且显式标记为 `concurrent_safe` 的调用，每组最多使用 4 个工作线程
+  - 未知工具、写操作及其他未声明安全的工具形成串行屏障，不能与前后调用重排
+  - 当前仅时间查询、计算器和模型信息查询标记为并发安全；结果始终按原始 `tool_call_id` 顺序回填
+
 - **版本化 Skill 调用**
   - `mode='help'`：分页读取不可信的 `SKILL.md`，同一会话必须读完全部页面
   - 未声明类型的 Skill 默认为 `instruction`，只能提供说明，不能执行程序
@@ -626,7 +631,7 @@ python -m pytest tests/test_lazy_loader.py tests/test_sandbox_tools.py -q
 | `test_logger.py` | 日志脱敏、队列与生命周期 | ✅ 通过 |
 | `test_provider.py` | Provider 校验与兼容端点 | ✅ 通过 |
 | `test_runtime.py` | 安全退出和任务队列清理 | ✅ 通过 |
-| `test_tool_executor.py` | 结构化工具结果、运行预算与中断回填 | ✅ 通过 |
+| `test_tool_executor.py` | 结构化工具结果、受控并行、运行预算与中断回填 | ✅ 通过 |
 | `test_documentation.py` | README 关键能力边界与文件引用 | ✅ 通过 |
 
 `tests/test_two_phase_skills.py` 是需要手动运行并消耗真实 API 的历史实验脚本，不包含 pytest 测试用例。仓库没有随附可复现的原始结果，因此不引用固定的安全率或性能结论。
@@ -755,6 +760,11 @@ CyberClaw currently supports only its own Markdown Skill format. OpenClaw or Cla
   - Each new user task independently limits main Agent-loop model calls, tool requests, and LangGraph recursion depth
   - When the CLI cancels an active task, unmatched terminal `tool_calls` in the checkpoint receive structured `interrupted` results
   - Backfilling preserves the message protocol for later model requests, but cannot guarantee immediate termination of side effects already running in a synchronous thread or external process
+
+- **Controlled tool concurrency**
+  - Only consecutive calls explicitly marked `concurrent_safe` in one model response run in parallel, with at most four worker threads per group
+  - Unknown, mutating, and other unmarked tools form serial barriers and are never reordered across neighboring calls
+  - Currently only time lookup, calculator, and model-info lookup are marked safe; results are always paired in original `tool_call_id` order
 
 - **Versioned Skill invocation**
   - `mode='help'`: page through an untrusted `SKILL.md`; the same session must read every page
@@ -1307,7 +1317,7 @@ python -m pytest tests/test_lazy_loader.py tests/test_sandbox_tools.py -q
 | `test_logger.py` | Log redaction, queue behavior, and lifecycle | ✅ Passing |
 | `test_provider.py` | Provider validation and compatible endpoints | ✅ Passing |
 | `test_runtime.py` | Safe shutdown and task-queue cleanup | ✅ Passing |
-| `test_tool_executor.py` | Structured tool results, run budgets, and interruption backfill | ✅ Passing |
+| `test_tool_executor.py` | Structured tool results, controlled concurrency, run budgets, and interruption backfill | ✅ Passing |
 | `test_documentation.py` | README capability boundaries and file references | ✅ Passing |
 
 `tests/test_two_phase_skills.py` is a manually run historical experiment that consumes a real API and contains no pytest test cases. The repository does not include reproducible raw results, so it does not claim fixed safety or performance numbers.

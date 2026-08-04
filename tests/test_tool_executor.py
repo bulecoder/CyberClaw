@@ -1,3 +1,4 @@
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -42,12 +43,32 @@ def timeout_tool() -> str:
 
 
 _execution_order: list[str] = []
+_phase_trace: list[str] = []
+_phase_barriers: dict[str, threading.Barrier] = {}
+_phase_lock = threading.Lock()
 
 
 @tool
 def ordered_tool(value: str) -> str:
     """Record serial execution order."""
     _execution_order.append(value)
+    return value
+
+
+@tool
+def concurrent_phase_tool(phase: str, value: str) -> str:
+    """Synchronize with another call in the same safe execution group."""
+    _phase_barriers[phase].wait(timeout=1)
+    with _phase_lock:
+        _phase_trace.append(f"{phase}:{value}")
+    return value
+
+
+@tool
+def serial_barrier_tool(value: str) -> str:
+    """Record a serial barrier between safe execution groups."""
+    with _phase_lock:
+        _phase_trace.append(f"serial:{value}")
     return value
 
 
@@ -185,6 +206,72 @@ class TestToolExecutorResultClassification(unittest.TestCase):
 
 
 class TestToolExecutorNodeProtocol(unittest.TestCase):
+    def test_only_consecutive_concurrent_safe_calls_run_in_parallel(self):
+        _phase_trace.clear()
+        _phase_barriers.clear()
+        _phase_barriers.update({
+            "before": threading.Barrier(2),
+            "after": threading.Barrier(2),
+        })
+        registry = ToolRegistry()
+        registry.register_tool(
+            concurrent_phase_tool,
+            source=ToolSource.CUSTOM,
+            concurrent_safe=True,
+        )
+        registry.register_tool(
+            serial_barrier_tool,
+            source=ToolSource.CUSTOM,
+            concurrent_safe=False,
+        )
+        executor = ToolExecutorNode(registry.freeze())
+        ai_message = AIMessage(
+            content="",
+            tool_calls=[
+                _call(
+                    "concurrent_phase_tool",
+                    {"phase": "before", "value": "a"},
+                    "call-1",
+                ),
+                _call(
+                    "concurrent_phase_tool",
+                    {"phase": "before", "value": "b"},
+                    "call-2",
+                ),
+                _call(
+                    "serial_barrier_tool",
+                    {"value": "barrier"},
+                    "call-3",
+                ),
+                _call(
+                    "concurrent_phase_tool",
+                    {"phase": "after", "value": "c"},
+                    "call-4",
+                ),
+                _call(
+                    "concurrent_phase_tool",
+                    {"phase": "after", "value": "d"},
+                    "call-5",
+                ),
+            ],
+        )
+
+        update = executor(
+            {"messages": [HumanMessage(content="run phases"), ai_message]},
+            _config(),
+        )
+
+        self.assertEqual(set(_phase_trace[:2]), {"before:a", "before:b"})
+        self.assertEqual(_phase_trace[2], "serial:barrier")
+        self.assertEqual(set(_phase_trace[3:]), {"after:c", "after:d"})
+        self.assertEqual(
+            [message.tool_call_id for message in update["messages"]],
+            ["call-1", "call-2", "call-3", "call-4", "call-5"],
+        )
+        self.assertTrue(
+            all(message.status == "success" for message in update["messages"])
+        )
+
     def test_interruption_backfill_only_pairs_missing_terminal_calls(self):
         ai_message = AIMessage(
             content="",

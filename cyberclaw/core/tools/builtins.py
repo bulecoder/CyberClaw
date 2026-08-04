@@ -367,9 +367,9 @@ BUILTIN_TOOLS = [
 ]
 
 
-# Metadata is deliberately conservative. Future policy code may deny or require
-# approval based on these fields, so unknown or state-changing tools must not be
-# labelled as read-only/concurrent-safe by default.
+# Metadata is deliberately conservative. The executor trusts concurrent_safe
+# when forming parallel groups, and future policy code may use risk/read_only;
+# unknown or state-changing tools therefore keep the restrictive defaults.
 BUILTIN_TOOL_PROFILES = {
     "get_current_time": {
         "risk": "low",

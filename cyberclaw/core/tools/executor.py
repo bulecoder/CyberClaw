@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
@@ -13,6 +15,9 @@ from pydantic.v1 import ValidationError as ValidationErrorV1
 from ..runtime import count_current_turn_tool_calls
 from .contracts import ToolMessageContent, ToolResult, ToolResultStatus
 from .registry import ToolRegistry
+
+
+_MAX_PARALLEL_TOOLS = 4
 
 
 class ToolProtocolError(RuntimeError):
@@ -106,7 +111,7 @@ def _validation_summary(exc: ValidationError | ValidationErrorV1) -> str:
 
 
 class ToolExecutorNode:
-    """Execute registered tool calls serially and return paired ToolMessages."""
+    """Execute safe call groups concurrently while preserving call order."""
 
     def __init__(
         self,
@@ -272,32 +277,88 @@ class ToolExecutorNode:
             raise ToolProtocolError("tools 节点收到的 AIMessage 不包含 tool_calls")
 
         consumed_calls = count_current_turn_tool_calls(messages)
-        results: list[ToolMessage] = []
-        for batch_index, call in enumerate(tool_calls):
-            within_budget = (
+        results: list[ToolResult | None] = [None] * len(tool_calls)
+
+        def within_budget(index: int) -> bool:
+            return (
                 self._max_tool_calls is None
-                or consumed_calls + batch_index < self._max_tool_calls
+                or consumed_calls + index < self._max_tool_calls
             )
-            if within_budget:
-                result = self.execute_call(call, config)
-            else:
-                call_id = str(call.get("id", "")).strip()
-                tool_name = str(call.get("name", "")).strip()
-                if not call_id or not tool_name:
-                    raise ToolProtocolError("超出预算的工具调用仍必须包含 id 和 name")
-                result = ToolResult(
-                    tool_call_id=call_id,
-                    tool_name=tool_name,
-                    status=ToolResultStatus.BUDGET_EXCEEDED,
-                    content=(
-                        "本次任务已达到工具调用上限，未执行该工具。"
-                        "请基于已有结果作答，或让用户缩小任务范围后重试。"
-                    ),
-                    error_type="ToolCallBudgetExceeded",
-                    metadata={
-                        "max_tool_calls": self._max_tool_calls,
-                        "consumed_tool_calls": consumed_calls + batch_index,
-                    },
+
+        def budget_result(index: int, call: Mapping[str, Any]) -> ToolResult:
+            call_id = str(call.get("id", "")).strip()
+            tool_name = str(call.get("name", "")).strip()
+            if not call_id or not tool_name:
+                raise ToolProtocolError(
+                    "超出预算的工具调用仍必须包含 id 和 name"
                 )
-            results.append(result.to_tool_message())
-        return {"messages": results}
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=tool_name,
+                status=ToolResultStatus.BUDGET_EXCEEDED,
+                content=(
+                    "本次任务已达到工具调用上限，未执行该工具。"
+                    "请基于已有结果作答，或让用户缩小任务范围后重试。"
+                ),
+                error_type="ToolCallBudgetExceeded",
+                metadata={
+                    "max_tool_calls": self._max_tool_calls,
+                    "consumed_tool_calls": consumed_calls + index,
+                },
+            )
+
+        index = 0
+        while index < len(tool_calls):
+            call = tool_calls[index]
+            if not within_budget(index):
+                results[index] = budget_result(index, call)
+                index += 1
+                continue
+
+            spec = self._registry.get(str(call.get("name", "")))
+            if spec is None or not spec.concurrent_safe:
+                results[index] = self.execute_call(call, config)
+                index += 1
+                continue
+
+            group_end = index + 1
+            while group_end < len(tool_calls) and within_budget(group_end):
+                next_call = tool_calls[group_end]
+                next_spec = self._registry.get(
+                    str(next_call.get("name", ""))
+                )
+                if next_spec is None or not next_spec.concurrent_safe:
+                    break
+                group_end += 1
+
+            group = tool_calls[index:group_end]
+            if len(group) == 1:
+                results[index] = self.execute_call(group[0], config)
+            else:
+                worker_count = min(len(group), _MAX_PARALLEL_TOOLS)
+                with ThreadPoolExecutor(
+                    max_workers=worker_count,
+                    thread_name_prefix="cyberclaw-tool",
+                ) as pool:
+                    futures = [
+                        pool.submit(
+                            copy_context().run,
+                            self.execute_call,
+                            grouped_call,
+                            config,
+                        )
+                        for grouped_call in group
+                    ]
+                    for offset, future in enumerate(futures):
+                        results[index + offset] = future.result()
+            index = group_end
+
+        if any(result is None for result in results):
+            raise RuntimeError("工具执行计划存在未完成的结果槽位")
+        return {
+            "messages": [
+                result.to_tool_message()
+                for result in results
+                if result is not None
+            ]
+        }
