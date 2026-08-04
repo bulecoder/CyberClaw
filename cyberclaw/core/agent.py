@@ -3,7 +3,7 @@ from collections.abc import Sequence
 
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import tools_condition
 from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from prompt_toolkit import print_formatted_text
@@ -13,7 +13,7 @@ from . import provider, skill_loader
 from .config import MEMORY_DIR
 from .context import AgentState, trim_context_messages
 from .logger import audit_logger
-from .tools import ToolRegistry, ToolRisk, ToolSource
+from .tools import ToolExecutorNode, ToolRegistry, ToolRisk, ToolSource
 from .tools import builtins as builtin_tools
 
 
@@ -67,7 +67,7 @@ def create_agent_app(
     registry = build_tool_registry(tools=tools, tool_registry=tool_registry)
     actual_tools = list(registry.tools)
 
-    tool_node = ToolNode(actual_tools)  # 创建执行器（工具交给 ToolNode）
+    tool_node = ToolExecutorNode(registry)
 
     llm = provider.get_provider(
         provider_name=provider_name,
@@ -91,11 +91,18 @@ def create_agent_app(
                 else:
                     break
             for msg in reversed(recent_tool_msgs):
+                structured_result = (
+                    msg.artifact.get("cyberclaw_tool_result", {})
+                    if isinstance(msg.artifact, dict)
+                    else {}
+                )
                 audit_logger.log_event(
                     thread_id=thread_id,
                     event="tool_result",
                     tool=msg.name,
                     result_chars=len(str(msg.content)),
+                    status=structured_result.get("status", msg.status),
+                    error_type=structured_result.get("error_type"),
                 )
 
         current_summary = state.get("summary", "")
@@ -183,11 +190,14 @@ def create_agent_app(
         # 解析大模型的回答并记录到日志
         if response.tool_calls:
             for tool_call in response.tool_calls:
+                tool_spec = registry.get(tool_call["name"])
                 audit_logger.log_event(
                     thread_id=thread_id,
                     event="tool_call",
                     tool=tool_call["name"],
-                    args=tool_call["args"]
+                    args=tool_call["args"],
+                    source=(tool_spec.source.value if tool_spec else "unknown"),
+                    risk=(tool_spec.risk.value if tool_spec else "unknown"),
                 )
         elif response.content:
             audit_logger.log_event(
@@ -206,7 +216,7 @@ def create_agent_app(
 
     # 注册两个节点
     workflow.add_node("agent", agent_node)  # 把消息发给模型，得到AIMessage
-    workflow.add_node("tools", tool_node)   # 根据AIMessage的 tool_calls 执行本地工具
+    workflow.add_node("tools", tool_node)   # 通过 Registry 统一执行 tool_calls
 
 
     workflow.add_edge(START, "agent")   # 定义入口
