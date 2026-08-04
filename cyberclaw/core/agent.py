@@ -53,8 +53,8 @@ def create_agent_app(
                 audit_logger.log_event(
                     thread_id=thread_id,
                     event="tool_result",
-                    tool = msg.name,
-                    result_summary = msg.content[:200]
+                    tool=msg.name,
+                    result_chars=len(str(msg.content)),
                 )
 
         current_summary = state.get("summary", "")
@@ -152,7 +152,7 @@ def create_agent_app(
             audit_logger.log_event(
                 thread_id=thread_id,
                 event="ai_message",
-                content=response.content
+                content_chars=len(str(response.content)),
             )
 
         if "messages" not in state_updates:

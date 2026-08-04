@@ -272,13 +272,15 @@ ToolCall
 
 剩余边界：统一 Tool Policy、逐次用户审批、风险分级和结构化审计将在后续 Tool Runtime 阶段实现；instruction 文本仍可能影响模型，因此不能把 Prompt 包装当成提示注入隔离。
 
-### P0-6 日志可能泄露敏感数据 `[CCL]`
+### P0-6 日志可能泄露敏感数据 `[CCL]`（第一轮修复已完成）
 
 位置：`cyberclaw/core/logger.py` 及 `agent.py` 的日志调用
 
-工具参数、模型回答、文件内容或命令可能包含 API Key、个人数据和源码。当前没有字段级脱敏、大小限制和保留策略。
+原实现把工具参数、模型回答和工具结果直接写入 JSONL，可能暴露 API Key、个人数据和源码。
 
-改进：默认记录元数据而非完整正文；敏感字段统一 redaction；正文记录必须显式 opt-in；增加日志轮转、保留期和失败处理。
+已完成：默认只记录模型回答和工具结果的长度；工具参数中的正文改为长度摘要；API Key、Token、Authorization 等敏感字段递归脱敏；字符串、容器深度和单事件大小均有限制。
+
+剩余边界：后续按实际使用量增加日志轮转与保留期；在完成明确的用户开关、存储边界和风险提示前，不提供正文日志 opt-in。
 
 ## 4.2 P1：运行时与状态可靠性
 
@@ -354,11 +356,15 @@ tool_call_id → 一次工具调用
 → 关闭 checkpoint/provider/logger
 ```
 
-### P1-6 Logger 生命周期不完整 `[CCL]`
+### P1-6 Logger 生命周期不完整 `[CCL]`（第一轮修复已完成）
 
 位置：`cyberclaw/core/logger.py`
 
-当前全局 singleton 在导入时启动 daemon thread，队列无界；重复 shutdown 可能等待一个已经结束的线程；写失败后事件直接丢失。应改为显式生命周期、幂等 close、有界队列、刷新策略和降级统计。
+原实现的全局 singleton 在导入时启动 daemon thread，队列无界；重复 shutdown 可能等待一个已经结束的线程，写入失败也不可观测。
+
+已完成：Logger 改为实例化对象并惰性启动；队列有界且生产者不阻塞；`close()` 可安全重复调用；写入、丢弃和失败计数可查询；日志目录创建或单条写入失败不会终止 Agent。
+
+剩余边界：下一轮 Runtime 退出改造时，由主程序在固定关停顺序中显式调用 Logger `close()`；日志轮转仍与 P0-6 一并保留为后续按需能力。
 
 ### P1-7 Skill 热更新与实际工具绑定不一致 `[CCL][LCC]`（第一轮修复已完成）
 
@@ -460,8 +466,8 @@ Monitor 不显示 `ai_message`，却保留从未产生的 `system_action` 分支
 |---|---|---|
 | 已集成 MCP 服务/可调用 MCP | 仓库没有 MCP client/runtime、连接配置或协议依赖 | 暂改为“规划中”；真实实现后再写支持的 transport 和边界 |
 | 严格安全沙盒、零信任、阻止未授权操作 | 已实现真实路径边界和默认关闭的程序白名单，但仍没有 OS 隔离、网络限制和逐次审批 | 使用“受限工作区与防误操作规则”，不宣称 OS 隔离 |
-| 五类完整日志事件 | 实际主要产生 `llm_input/tool_call/tool_result/ai_message`；`system_action` 未产生 | 统一事件 schema、Logger 和 Monitor |
-| 记录全部行为/完整决策轨迹 | `llm_input` 仅有消息数量，缺少模型调用、审批、用量和 span | 改为有限事件日志；完成 trace 后再升级声明 |
+| 五类完整日志事件 | 已统一为实际产生的 4 类有限元数据事件，并删除 Monitor 中从未产生的 `system_action` 分支 | 已修正文档与展示；后续 Trace 使用独立版本化 schema |
+| 记录全部行为/完整决策轨迹 | `llm_input` 仅有消息数量，且正文默认不落盘，缺少用量和 span | 已改称有限事件日志；完成 trace 后再升级声明 |
 | Heartbeat 独立后台进程，主程序退出后仍工作 | 实际是在 `entry/main.py` 内创建的协程，没有独立服务入口 | 改为“随 CLI 生命周期运行的后台协程”，或真正拆独立 scheduler |
 | 英文 README 每秒检查任务 | `main.py` 实际传入约 10 秒间隔 | 文档和默认配置统一 |
 | `read_user_profile` 后再保存 | 没有这个工具，只有 Agent 节点直接读取 profile 文件 | 增加明确只读能力或删除错误说明 |

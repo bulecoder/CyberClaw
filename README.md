@@ -39,7 +39,7 @@ English Nav: [Quick Start](#-quick-start) · [Core Capabilities](#-core-capabili
 
 CyberClaw 是一个**企业级透明可控智能体**，重新定义 AI 系统的可信边界：
 
-- **🔍 白盒化决策** → 5 类事件审计 + JSONL 日志 + Rich 监控终端，所有行为可追溯
+- **🔍 有限事件审计** → 4 类元数据事件 + JSONL 日志 + Rich 监控终端，辅助定位模型与工具调用
 - **🛡️ 受限工作区执行** → 文件路径强制限定；程序执行默认关闭并使用显式白名单
 - **🧠 持续学习** → 双水位记忆系统（长期画像 + 短期摘要），越用越懂你
 - **⚡ 复杂任务编排** → 心跳任务系统 + 可插拔技能 + MCP 服务集成，解放双手
@@ -53,7 +53,7 @@ CyberClaw 当前只原生支持本项目定义的 Markdown Skill 格式。OpenCl
 | 能力 | 说明 | 优势 |
 |------|------|------|
 | **🧠 双水位记忆** | 长期画像 + 短期摘要，持续学习用户偏好 | 越用越懂你，避免重复询问 |
-| **🔍 全行为审计** | 5 类事件实时审计，JSONL 日志 + Rich 监控终端 | 告别黑箱，所有决策可追溯 |
+| **🔍 有限事件审计** | 4 类元数据事件，敏感字段与正文默认不落盘 | 在降低泄密风险的同时辅助运行诊断 |
 | **🛡️ 受限工作区执行** | 文件路径边界 + 默认关闭的程序白名单 | 降低误操作和凭据泄露风险，不宣称 OS 级隔离 |
 | **⏰ 心跳任务引擎** | 后台独立进程，自动执行定时任务 | 解放双手，复杂任务自动化 |
 | **🖥️ 跨平台支持** | Unix + Windows 路径处理与白名单程序适配 | 一套代码覆盖主要桌面平台 |
@@ -77,7 +77,8 @@ CyberClaw 当前只原生支持本项目定义的 Markdown Skill 格式。OpenCl
   - 说明书或入口文件变化后，旧 help 状态立即失效
 
 - **透明监控系统**
-  - 5 类事件审计：`llm_input`, `tool_call`, `tool_result`, `ai_message`, `system_action`
+  - 4 类元数据事件：`llm_input`, `tool_call`, `tool_result`, `ai_message`
+  - API Key、Token 等敏感字段自动脱敏，模型回答和文件正文仅记录长度
   - JSONL 日志格式，支持 `tail -f` 实时监控
   - Rich 终端 UI，颜色/面板区分事件类型
 
@@ -289,13 +290,13 @@ cyberclaw monitor
 ## 🏢 适用场景
 
 ### 🔒 企业级应用
-- **合规审计** - 5 类事件审计日志，满足企业合规要求
+- **运行诊断** - 4 类有限元数据事件，辅助排查模型与工具调用
 - **权限管控** - 文件路径边界 + 默认关闭的程序白名单，降低越权风险
 - **任务自动化** - 心跳任务引擎，定时执行重复性工作
 - **知识沉淀** - 双水位记忆系统，持续学习组织偏好
 
 ### 🧪 AI 研究与开发
-- **Agent 行为分析** - 完整记录 LLM 决策过程和工具调用链
+- **Agent 行为分析** - 记录主要模型与工具事件，不宣称完整决策追踪
 - **安全研究** - 两段式调用机制，研究 AI 安全边界
 - **调试友好** - JSONL 日志 + Rich 监控终端，快速定位问题
 - **可扩展架构** - 可插拔技能系统，快速验证新想法
@@ -501,7 +502,8 @@ cyberclaw monitor
 - 💡 工具调用
 - 💻 工具结果
 - 🤖 AI 回复
-- ⚙️ 系统动作
+
+为避免泄露 API Key、个人数据和文件正文，监控器展示的是脱敏后的参数及长度等元数据，不展示模型回答或工具结果正文。
 
 #### 2. 查看审计日志
 
@@ -675,7 +677,7 @@ Made with ❤️ by [@ttguy0707](https://github.com/ttguy0707)
 
 CyberClaw is an **enterprise-grade transparent and controllable agent** that redefines the trust boundary of AI systems:
 
-- **🔍 White-box decisions** -> 5-category event auditing, JSONL logs, and a Rich monitoring terminal make every action traceable
+- **🔍 Limited event auditing** -> four metadata event types, JSONL logs, and a Rich monitoring terminal help diagnose model and tool activity
 - **🛡️ Restricted workspace execution** -> enforced file boundaries plus program execution that is disabled by default and gated by an explicit allowlist
 - **🧠 Continuous learning** -> dual-watermark memory, combining a long-term profile with short-term summaries, learns your preferences over time
 - **⚡ Complex task orchestration** -> heartbeat tasks, pluggable skills, and MCP service integration automate repetitive work
@@ -689,7 +691,7 @@ CyberClaw currently supports only its own Markdown Skill format. OpenClaw or Cla
 | Capability | Description | Benefit |
 |------|------|------|
 | **🧠 Dual-watermark memory** | Long-term profile + short-term summaries that continuously learn user preferences | Understands you better over time and avoids repeated questions |
-| **🔍 Full behavior auditing** | 5-category real-time event auditing, JSONL logs, and a Rich monitoring terminal | No more black boxes; every decision is traceable |
+| **🔍 Limited event auditing** | Four metadata event types with sensitive fields and content excluded by default | Supports runtime diagnosis while reducing disclosure risk |
 | **🛡️ Restricted workspace execution** | File-path boundaries plus a disabled-by-default program allowlist | Reduces accidental actions and credential exposure without claiming OS isolation |
 | **⏰ Heartbeat task engine** | Independent background process for scheduled tasks | Automates complex and repetitive tasks |
 | **🖥️ Cross-platform support** | Unix and Windows path handling plus allowlisted program adaptation | One codebase covers major desktop platforms |
@@ -713,7 +715,8 @@ CyberClaw currently supports only its own Markdown Skill format. OpenClaw or Cla
   - Any manual or entrypoint change invalidates previous help state
 
 - **Transparent monitoring system**
-  - 5 audited event types: `llm_input`, `tool_call`, `tool_result`, `ai_message`, `system_action`
+  - Four metadata event types: `llm_input`, `tool_call`, `tool_result`, `ai_message`
+  - API keys and tokens are redacted; model replies and file bodies are represented only by their length
   - JSONL log format with `tail -f` real-time monitoring
   - Rich terminal UI with colors and panels for different event types
 
@@ -1138,7 +1141,8 @@ View in real time:
 - 💡 Tool calls
 - 💻 Tool results
 - 🤖 AI replies
-- ⚙️ System actions
+
+To avoid exposing API keys, personal data, and file bodies, the monitor shows sanitized arguments and metadata such as content length instead of model replies or tool-result bodies.
 
 #### 2. View Audit Logs
 

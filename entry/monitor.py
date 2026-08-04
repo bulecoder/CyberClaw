@@ -98,14 +98,13 @@ def render_event(line: str):
             
         elif event == "tool_result":
             tool_name = data.get("tool", "unknown")
-            result = data.get("result_summary", "")
-            display_result = result[:300] + "\n...[截断]..." if len(result) > 300 else result
-            content = f"[bold white] ● 执行结果: [/bold white][bold cyan]{tool_name}[/bold cyan]\n{display_result}"
+            result_chars = data.get("result_chars", 0)
+            content = f"[bold white] ● 执行结果: [/bold white][bold cyan]{tool_name}[/bold cyan]\n结果长度：{result_chars} 字符（正文不写入审计日志）"
             console.print(Panel(content, title=f"✦ 环境回传 [ {ts} ]", title_align="left", border_style="cyan", width=60))
-            
-        elif event == "system_action":
-            action = data.get("content", "")
-            console.print(f"{prefix}[warning]✦ 底层状态机：{action}[/warning]")
+
+        elif event == "ai_message":
+            content_chars = data.get("content_chars", 0)
+            console.print(f"{prefix}[ai_message]🤖 模型已返回 {content_chars} 字符（正文不写入审计日志）[/ai_message]")
             
     except: pass
 
