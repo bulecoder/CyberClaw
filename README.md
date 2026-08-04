@@ -201,6 +201,11 @@ OPENAI_API_KEY=sk-your-api-key-here
 # Base URL (可选，使用代理时配置)
 OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 
+# 可选：单次任务运行预算（以下为默认值）
+# CYBERCLAW_MAX_MODEL_CALLS=20
+# CYBERCLAW_MAX_TOOL_CALLS=50
+# CYBERCLAW_RECURSION_LIMIT=50
+
 # 可选：受限程序执行默认关闭；仅在你信任待运行程序时开启
 # CYBERCLAW_ENABLE_SHELL=true
 # CYBERCLAW_SHELL_ALLOWED_COMMANDS=python
@@ -213,6 +218,9 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 - `ANTHROPIC_API_KEY`: Anthropic 的 API Key
 - `OPENAI_API_BASE`: 兼容接口的完整 `http://` 或 `https://` 地址；`DEFAULT_PROVIDER=other` 时必填
 - `OLLAMA_BASE_URL`: Ollama 本地服务地址（默认 `http://localhost:11434`）
+- `CYBERCLAW_MAX_MODEL_CALLS`: 每次用户任务中 Agent 主循环最多调用模型的次数（默认 `20`；上下文摘要等辅助调用不在此计数内）
+- `CYBERCLAW_MAX_TOOL_CALLS`: 每次用户任务最多处理的工具调用请求数（默认 `50`；失败请求也计数，超出部分只回填拒绝结果）
+- `CYBERCLAW_RECURSION_LIMIT`: LangGraph 单次运行递归上限（默认 `50`，至少为模型调用上限的两倍再加一）
 - `CYBERCLAW_ENABLE_SHELL`: 是否显式启用受限程序执行（默认关闭）
 - `CYBERCLAW_SHELL_ALLOWED_COMMANDS`: 允许启动的程序名称白名单，使用英文逗号分隔
 
@@ -867,6 +875,11 @@ OPENAI_API_KEY=sk-your-api-key-here
 # Base URL. Optional; configure it when using a proxy or compatible endpoint.
 OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 
+# Optional: per-task runtime limits (defaults shown below)
+# CYBERCLAW_MAX_MODEL_CALLS=20
+# CYBERCLAW_MAX_TOOL_CALLS=50
+# CYBERCLAW_RECURSION_LIMIT=50
+
 # Optional: restricted program execution is disabled by default
 # CYBERCLAW_ENABLE_SHELL=true
 # CYBERCLAW_SHELL_ALLOWED_COMMANDS=python
@@ -879,6 +892,9 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 - `ANTHROPIC_API_KEY`: Anthropic API key
 - `OPENAI_API_BASE`: complete `http://` or `https://` URL for a compatible endpoint; required when `DEFAULT_PROVIDER=other`
 - `OLLAMA_BASE_URL`: local Ollama service URL, defaulting to `http://localhost:11434`
+- `CYBERCLAW_MAX_MODEL_CALLS`: maximum main Agent-loop model calls per user task; defaults to `20` and excludes auxiliary context-summary calls
+- `CYBERCLAW_MAX_TOOL_CALLS`: maximum tool requests processed per user task; defaults to `50`, failed requests count, and excess requests receive paired rejection results
+- `CYBERCLAW_RECURSION_LIMIT`: LangGraph recursion cap per run; defaults to `50` and must be at least twice the model-call limit plus one
 - `CYBERCLAW_ENABLE_SHELL`: explicitly enable restricted program execution; disabled by default
 - `CYBERCLAW_SHELL_ALLOWED_COMMANDS`: comma-separated allowlist of executable names
 

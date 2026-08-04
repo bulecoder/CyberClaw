@@ -10,6 +10,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 from pydantic.v1 import ValidationError as ValidationErrorV1
 
+from ..runtime import count_current_turn_tool_calls
 from .contracts import ToolMessageContent, ToolResult, ToolResultStatus
 from .registry import ToolRegistry
 
@@ -48,12 +49,24 @@ def _validation_summary(exc: ValidationError | ValidationErrorV1) -> str:
 class ToolExecutorNode:
     """Execute registered tool calls serially and return paired ToolMessages."""
 
-    def __init__(self, registry: ToolRegistry) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        *,
+        max_tool_calls: int | None = None,
+    ) -> None:
+        if max_tool_calls is not None and max_tool_calls < 0:
+            raise ValueError("max_tool_calls 不能小于 0")
         self._registry = registry.snapshot()
+        self._max_tool_calls = max_tool_calls
 
     @property
     def registry(self) -> ToolRegistry:
         return self._registry
+
+    @property
+    def max_tool_calls(self) -> int | None:
+        return self._max_tool_calls
 
     def _metadata(self, tool_name: str, duration_ms: float) -> dict[str, Any]:
         spec = self._registry.get(tool_name)
@@ -199,8 +212,33 @@ class ToolExecutorNode:
         if not tool_calls:
             raise ToolProtocolError("tools 节点收到的 AIMessage 不包含 tool_calls")
 
-        results = [
-            self.execute_call(call, config).to_tool_message()
-            for call in tool_calls
-        ]
+        consumed_calls = count_current_turn_tool_calls(messages)
+        results: list[ToolMessage] = []
+        for batch_index, call in enumerate(tool_calls):
+            within_budget = (
+                self._max_tool_calls is None
+                or consumed_calls + batch_index < self._max_tool_calls
+            )
+            if within_budget:
+                result = self.execute_call(call, config)
+            else:
+                call_id = str(call.get("id", "")).strip()
+                tool_name = str(call.get("name", "")).strip()
+                if not call_id or not tool_name:
+                    raise ToolProtocolError("超出预算的工具调用仍必须包含 id 和 name")
+                result = ToolResult(
+                    tool_call_id=call_id,
+                    tool_name=tool_name,
+                    status=ToolResultStatus.BUDGET_EXCEEDED,
+                    content=(
+                        "本次任务已达到工具调用上限，未执行该工具。"
+                        "请基于已有结果作答，或让用户缩小任务范围后重试。"
+                    ),
+                    error_type="ToolCallBudgetExceeded",
+                    metadata={
+                        "max_tool_calls": self._max_tool_calls,
+                        "consumed_tool_calls": consumed_calls + batch_index,
+                    },
+                )
+            results.append(result.to_tool_message())
         return {"messages": results}

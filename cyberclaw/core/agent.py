@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import tools_condition
-from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import ANSI
@@ -13,6 +13,7 @@ from . import provider, skill_loader
 from .config import MEMORY_DIR
 from .context import AgentState, trim_context_messages
 from .logger import audit_logger
+from .runtime import AgentRunLimits, count_current_turn_model_calls
 from .tools import ToolExecutorNode, ToolRegistry, ToolRisk, ToolSource
 from .tools import builtins as builtin_tools
 
@@ -62,12 +63,17 @@ def create_agent_app(
     model_name: str = "gpt-4o-mini",
     tools: Sequence[BaseTool] | None = None,
     tool_registry: ToolRegistry | None = None,
-    checkpointer = None
+    checkpointer = None,
+    run_limits: AgentRunLimits | None = None,
 ):
+    limits = run_limits or AgentRunLimits.from_env()
     registry = build_tool_registry(tools=tools, tool_registry=tool_registry)
     actual_tools = list(registry.tools)
 
-    tool_node = ToolExecutorNode(registry)
+    tool_node = ToolExecutorNode(
+        registry,
+        max_tool_calls=limits.max_tool_calls,
+    )
 
     llm = provider.get_provider(
         provider_name=provider_name,
@@ -104,6 +110,20 @@ def create_agent_app(
                     status=structured_result.get("status", msg.status),
                     error_type=structured_result.get("error_type"),
                 )
+
+        model_calls = count_current_turn_model_calls(raw_messages)
+        if model_calls >= limits.max_model_calls:
+            return {
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "本次任务已达到模型调用上限"
+                            f"（{limits.max_model_calls} 次），为避免持续消耗，"
+                            "CyberClaw 已停止当前执行。请缩小任务范围后继续。"
+                        )
+                    )
+                ]
+            }
 
         current_summary = state.get("summary", "")
         final_msgs, discarded_msgs = trim_context_messages(raw_messages, trigger_turns=40, keep_turns=10)   # 上下文裁剪
@@ -227,6 +247,8 @@ def create_agent_app(
 
     workflow.add_edge("tools", "agent")     # tools 后必须回到 agent，工具结果必须回到模型
 
-    app = workflow.compile(checkpointer=checkpointer)   # 编译图
+    app = workflow.compile(checkpointer=checkpointer).with_config(
+        {"recursion_limit": limits.recursion_limit}
+    )   # 编译图，并为异常图循环设置独立的递归深度兜底
 
     return app

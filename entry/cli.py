@@ -13,6 +13,7 @@ from cyberclaw.core.environment import (
     load_project_env,
 )
 from cyberclaw.core.provider import OPENAI_COMPATIBLE_PROVIDERS, get_provider
+from cyberclaw.core.runtime import AgentRunLimits, RuntimeLimitConfigError
 from langchain_core.messages import HumanMessage
 
 app = typer.Typer(help="CyberClaw - 极客专属的赛博智能终端")
@@ -195,6 +196,12 @@ def run_agent():
             if not os.getenv("ANTHROPIC_API_KEY"):
                 _show_boot_error()
                 raise typer.Exit(code=1)
+
+    try:
+        AgentRunLimits.from_env()
+    except RuntimeLimitConfigError as exc:
+        _show_boot_error(f"运行预算配置无效：{exc}\n")
+        raise typer.Exit(code=1)
 
     import entry.main as cyberclaw_main
     cyberclaw_main.main()

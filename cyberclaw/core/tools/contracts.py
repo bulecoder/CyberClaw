@@ -34,6 +34,7 @@ class ToolResultStatus(str, Enum):
     PERMISSION_DENIED = "permission_denied"
     EXECUTION_ERROR = "execution_error"
     TIMEOUT = "timeout"
+    BUDGET_EXCEEDED = "budget_exceeded"
 
 
 ToolMessageContent = str | list[str | dict[str, Any]]

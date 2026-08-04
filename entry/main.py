@@ -16,7 +16,7 @@ from cyberclaw.core.config import DB_PATH, ensure_workspace
 from cyberclaw.core.environment import load_project_env
 from cyberclaw.core.heartbeat import pacemaker_loop
 from cyberclaw.core.logger import audit_logger
-from cyberclaw.core.runtime import STOP_TASK, shutdown_task_queue
+from cyberclaw.core.runtime import AgentRunLimits, STOP_TASK, shutdown_task_queue
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -93,11 +93,20 @@ async def async_main():
     ensure_workspace()
     current_provider = os.getenv("DEFAULT_PROVIDER", "aliyun")
     current_model = os.getenv("DEFAULT_MODEL", "glm-5")
+    run_limits = AgentRunLimits.from_env()
     task_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=100)
 
     async with AsyncSqliteSaver.from_conn_string(DB_PATH) as memory:
-        app = create_agent_app(provider_name=current_provider, model_name=current_model, checkpointer=memory)
-        config = {"configurable": {"thread_id": "local_geek_master"}}
+        app = create_agent_app(
+            provider_name=current_provider,
+            model_name=current_model,
+            checkpointer=memory,
+            run_limits=run_limits,
+        )
+        config = {
+            "configurable": {"thread_id": "local_geek_master"},
+            "recursion_limit": run_limits.recursion_limit,
+        }
 
         class SpinnerState:
             action_words = [

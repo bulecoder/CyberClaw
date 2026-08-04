@@ -12,6 +12,7 @@ from cyberclaw.core.tools import (
     ToolResultStatus,
     ToolSource,
 )
+from cyberclaw.core.runtime import AgentRunLimits
 
 
 @tool
@@ -182,6 +183,38 @@ class TestToolExecutorResultClassification(unittest.TestCase):
 
 
 class TestToolExecutorNodeProtocol(unittest.TestCase):
+    def test_tool_budget_executes_only_the_allowed_calls_and_pairs_the_rest(self):
+        _execution_order.clear()
+        executor = ToolExecutorNode(
+            _registry(ordered_tool),
+            max_tool_calls=1,
+        )
+        ai_message = AIMessage(
+            content="",
+            tool_calls=[
+                _call("ordered_tool", {"value": "executed"}, "call-1"),
+                _call("ordered_tool", {"value": "blocked"}, "call-2"),
+            ],
+        )
+
+        update = executor(
+            {"messages": [HumanMessage(content="run"), ai_message]},
+            _config(),
+        )
+
+        self.assertEqual(_execution_order, ["executed"])
+        self.assertEqual(
+            [message.tool_call_id for message in update["messages"]],
+            ["call-1", "call-2"],
+        )
+        self.assertEqual(
+            [
+                message.artifact["cyberclaw_tool_result"]["status"]
+                for message in update["messages"]
+            ],
+            ["success", "budget_exceeded"],
+        )
+
     def test_node_pairs_every_call_in_original_serial_order(self):
         _execution_order.clear()
         executor = ToolExecutorNode(_registry(ordered_tool))
@@ -244,6 +277,150 @@ class TestToolExecutorNodeProtocol(unittest.TestCase):
 
 
 class TestToolExecutorGraphIntegration(unittest.TestCase):
+    @patch("cyberclaw.core.agent.audit_logger.log_event", return_value=True)
+    @patch("cyberclaw.core.agent.provider.get_provider")
+    def test_model_budget_resets_for_each_new_user_turn(
+        self,
+        mock_get_provider,
+        _mock_log_event,
+    ):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from cyberclaw.core.agent import create_agent_app
+
+        bound_model = Mock()
+        bound_model.invoke.side_effect = [
+            AIMessage(content="first answer"),
+            AIMessage(content="second answer"),
+        ]
+        model = Mock()
+        model.bind_tools.return_value = bound_model
+        mock_get_provider.return_value = model
+
+        app = create_agent_app(
+            tools=[echo_tool],
+            checkpointer=MemorySaver(),
+            run_limits=AgentRunLimits(
+                max_model_calls=1,
+                max_tool_calls=1,
+                recursion_limit=4,
+            ),
+        )
+        config = _config("persistent-budget-thread")
+
+        first = app.invoke(
+            {"messages": [HumanMessage(content="first")], "summary": ""},
+            config=config,
+        )
+        second = app.invoke(
+            {"messages": [HumanMessage(content="second")], "summary": ""},
+            config=config,
+        )
+
+        self.assertEqual(first["messages"][-1].content, "first answer")
+        self.assertEqual(second["messages"][-1].content, "second answer")
+        self.assertEqual(bound_model.invoke.call_count, 2)
+
+    @patch("cyberclaw.core.agent.audit_logger.log_event", return_value=True)
+    @patch("cyberclaw.core.agent.provider.get_provider")
+    def test_model_call_budget_stops_an_infinite_tool_loop(
+        self,
+        mock_get_provider,
+        _mock_log_event,
+    ):
+        from cyberclaw.core.agent import create_agent_app
+
+        bound_model = Mock()
+        bound_model.invoke.side_effect = [
+            AIMessage(
+                content="",
+                tool_calls=[_call("echo_tool", {"value": "one"}, "call-1")],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[_call("echo_tool", {"value": "two"}, "call-2")],
+            ),
+        ]
+        model = Mock()
+        model.bind_tools.return_value = bound_model
+        mock_get_provider.return_value = model
+
+        app = create_agent_app(
+            tools=[echo_tool],
+            run_limits=AgentRunLimits(
+                max_model_calls=2,
+                max_tool_calls=10,
+                recursion_limit=6,
+            ),
+        )
+        result = app.invoke(
+            {
+                "messages": [HumanMessage(content="keep using tools")],
+                "summary": "",
+            },
+            config=_config("budget-thread"),
+        )
+
+        self.assertEqual(bound_model.invoke.call_count, 2)
+        self.assertIn("达到模型调用上限", result["messages"][-1].content)
+        self.assertFalse(result["messages"][-1].tool_calls)
+
+    @patch("cyberclaw.core.agent.audit_logger.log_event", return_value=True)
+    @patch("cyberclaw.core.agent.provider.get_provider")
+    def test_graph_preserves_protocol_when_tool_budget_is_exhausted(
+        self,
+        mock_get_provider,
+        _mock_log_event,
+    ):
+        from cyberclaw.core.agent import create_agent_app
+
+        _execution_order.clear()
+        bound_model = Mock()
+        bound_model.invoke.side_effect = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("ordered_tool", {"value": "one"}, "call-1"),
+                    _call("ordered_tool", {"value": "two"}, "call-2"),
+                ],
+            ),
+            AIMessage(content="done"),
+        ]
+        model = Mock()
+        model.bind_tools.return_value = bound_model
+        mock_get_provider.return_value = model
+
+        app = create_agent_app(
+            tools=[ordered_tool],
+            run_limits=AgentRunLimits(
+                max_model_calls=3,
+                max_tool_calls=1,
+                recursion_limit=8,
+            ),
+        )
+        result = app.invoke(
+            {
+                "messages": [HumanMessage(content="run both")],
+                "summary": "",
+            },
+            config=_config("tool-budget-thread"),
+        )
+
+        tool_messages = [
+            message
+            for message in result["messages"]
+            if isinstance(message, ToolMessage)
+        ]
+        self.assertEqual(_execution_order, ["one"])
+        self.assertEqual(
+            [message.tool_call_id for message in tool_messages],
+            ["call-1", "call-2"],
+        )
+        self.assertEqual(
+            tool_messages[1].artifact["cyberclaw_tool_result"]["status"],
+            "budget_exceeded",
+        )
+
     @patch("cyberclaw.core.agent.audit_logger.log_event", return_value=True)
     @patch("cyberclaw.core.agent.provider.get_provider")
     def test_agent_graph_executes_and_pairs_tool_result(

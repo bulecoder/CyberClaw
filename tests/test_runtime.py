@@ -1,7 +1,85 @@
 import asyncio
+import os
 import unittest
+from unittest.mock import patch
 
-from cyberclaw.core.runtime import STOP_TASK, shutdown_task_queue
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from cyberclaw.core.runtime import (
+    AgentRunLimits,
+    RuntimeLimitConfigError,
+    STOP_TASK,
+    count_current_turn_model_calls,
+    count_current_turn_tool_calls,
+    current_turn_messages,
+    shutdown_task_queue,
+)
+
+
+class TestAgentRunLimits(unittest.TestCase):
+    def test_defaults_leave_existing_local_configuration_unchanged(self):
+        limits = AgentRunLimits()
+
+        self.assertEqual(limits.max_model_calls, 20)
+        self.assertEqual(limits.max_tool_calls, 50)
+        self.assertEqual(limits.recursion_limit, 50)
+
+    def test_loads_optional_integer_environment_overrides(self):
+        with patch.dict(
+            os.environ,
+            {
+                "CYBERCLAW_MAX_MODEL_CALLS": "4",
+                "CYBERCLAW_MAX_TOOL_CALLS": "7",
+                "CYBERCLAW_RECURSION_LIMIT": "12",
+            },
+        ):
+            limits = AgentRunLimits.from_env()
+
+        self.assertEqual(limits, AgentRunLimits(4, 7, 12))
+
+    def test_rejects_invalid_or_conflicting_limits(self):
+        with self.assertRaises(RuntimeLimitConfigError):
+            AgentRunLimits(max_model_calls=0)
+        with self.assertRaises(RuntimeLimitConfigError):
+            AgentRunLimits(max_tool_calls=-1)
+        with self.assertRaises(RuntimeLimitConfigError):
+            AgentRunLimits(max_model_calls=4, recursion_limit=8)
+
+        with patch.dict(
+            os.environ,
+            {"CYBERCLAW_MAX_MODEL_CALLS": "not-an-integer"},
+        ):
+            with self.assertRaises(RuntimeLimitConfigError):
+                AgentRunLimits.from_env()
+
+    def test_counts_only_the_latest_user_turn(self):
+        messages = [
+            HumanMessage(content="old turn"),
+            AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "old_tool",
+                    "args": {},
+                    "id": "old-call",
+                    "type": "tool_call",
+                }],
+            ),
+            ToolMessage(
+                content="old result",
+                tool_call_id="old-call",
+                name="old_tool",
+            ),
+            AIMessage(content="old answer"),
+            HumanMessage(content="current turn"),
+            AIMessage(content="current answer"),
+        ]
+
+        self.assertEqual(
+            current_turn_messages(messages),
+            messages[-2:],
+        )
+        self.assertEqual(count_current_turn_model_calls(messages), 1)
+        self.assertEqual(count_current_turn_tool_calls(messages), 0)
 
 
 class TestRuntimeShutdown(unittest.IsolatedAsyncioTestCase):
