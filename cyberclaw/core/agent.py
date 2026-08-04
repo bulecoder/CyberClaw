@@ -21,7 +21,9 @@ def create_agent_app(
     checkpointer = None
 ):
     if tools is None:
-        dynamic_tools = load_dynamic_skills()
+        dynamic_tools = load_dynamic_skills(
+            reserved_names={tool.name for tool in BUILTIN_TOOLS}
+        )
         actual_tools = BUILTIN_TOOLS + dynamic_tools
     else:
         actual_tools = tools    # 如果显示传入 tools，则会完全替代默认工具，并不是追加

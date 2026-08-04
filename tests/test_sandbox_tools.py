@@ -12,6 +12,7 @@ from cyberclaw.core.tools.sandbox_tools import (
     list_office_files,
     read_office_file,
     write_office_file,
+    execute_office_program,
     execute_office_shell,
     _get_safe_path
 )
@@ -269,7 +270,7 @@ class TestSandboxTools(unittest.TestCase):
         with patch.dict(os.environ, {"CYBERCLAW_ENABLE_SHELL": ""}, clear=False):
             result = execute_office_shell.invoke({"command": "ls"})
 
-        self.assertIn("Shell 执行默认关闭", result)
+        self.assertIn("程序执行默认关闭", result)
         mock_subprocess.assert_not_called()
 
     @patch('cyberclaw.core.tools.sandbox_tools.subprocess.run')
@@ -285,6 +286,35 @@ class TestSandboxTools(unittest.TestCase):
 
         self.assertIn("不在 CYBERCLAW_SHELL_ALLOWED_COMMANDS 白名单", result)
         mock_subprocess.assert_not_called()
+
+    @patch('cyberclaw.core.tools.sandbox_tools.shutil.which', return_value='mock-python')
+    @patch('cyberclaw.core.tools.sandbox_tools.subprocess.run')
+    def test_execute_office_program_preserves_structured_arguments(
+        self, mock_subprocess, mock_which
+    ):
+        """Skill 固定入口通过结构化 argv 执行，不重新拼接命令字符串。"""
+        def fake_run(*args, **kwargs):
+            return SimpleNamespace(returncode=0)
+
+        mock_subprocess.side_effect = fake_run
+        with tempfile.TemporaryDirectory() as office_dir, patch(
+            'cyberclaw.core.tools.sandbox_tools.OFFICE_DIR', office_dir
+        ), patch.dict(os.environ, {
+            "CYBERCLAW_ENABLE_SHELL": "true",
+            "CYBERCLAW_SHELL_ALLOWED_COMMANDS": "python",
+        }, clear=False):
+            result = execute_office_program(
+                "python",
+                ["skills/report/run.py", "--name", "a b"],
+            )
+
+        call_args, call_kwargs = mock_subprocess.call_args
+        self.assertEqual(
+            call_args[0],
+            ['mock-python', 'skills/report/run.py', '--name', 'a b'],
+        )
+        self.assertFalse(call_kwargs["shell"])
+        self.assertIn("退出码 (Exit Code): 0", result)
 
     def test_execute_office_shell_dangerous_commands(self):
         """命令连接、路径逃逸和绝对路径参数都会在执行前被拦截。"""

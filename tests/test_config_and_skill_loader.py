@@ -1,7 +1,8 @@
 import unittest
 import os
 import sys
-from unittest.mock import patch, MagicMock
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -35,23 +36,32 @@ class TestSkillLoader(unittest.TestCase):
             # 如果导入失败，可能是因为依赖问题，但仍需确认模块结构
             self.fail(f"无法导入技能加载器: {e}")
 
-    @patch('os.path.exists', return_value=False)
-    @patch('os.listdir', side_effect=FileNotFoundError())
-    def test_load_dynamic_skills_no_directory(self, mock_listdir, mock_exists):
+    def test_load_dynamic_skills_no_directory(self):
         """测试技能加载器 - 不存在的目录"""
-        from cyberclaw.core.skill_loader import load_dynamic_skills
+        from cyberclaw.core.skill_loader import LazySkillLoader
 
-        skills = load_dynamic_skills()
-        self.assertEqual(skills, [])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            office_dir = Path(temp_dir) / "office"
+            office_dir.mkdir()
+            loader = LazySkillLoader(
+                skills_dir=office_dir / "missing",
+                office_dir=office_dir,
+            )
+            self.assertEqual(loader.get_all_tools(), [])
 
-    @patch('os.path.exists', return_value=True)
-    @patch('os.listdir', return_value=[])
-    def test_load_dynamic_skills_empty_directory(self, mock_listdir, mock_exists):
+    def test_load_dynamic_skills_empty_directory(self):
         """测试技能加载器 - 空目录"""
-        from cyberclaw.core.skill_loader import load_dynamic_skills
+        from cyberclaw.core.skill_loader import LazySkillLoader
 
-        skills = load_dynamic_skills()
-        self.assertEqual(skills, [])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            office_dir = Path(temp_dir) / "office"
+            skills_dir = office_dir / "skills"
+            skills_dir.mkdir(parents=True)
+            loader = LazySkillLoader(
+                skills_dir=skills_dir,
+                office_dir=office_dir,
+            )
+            self.assertEqual(loader.get_all_tools(), [])
 
 
 if __name__ == '__main__':

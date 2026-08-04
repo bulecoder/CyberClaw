@@ -44,9 +44,9 @@ CyberClaw 是一个**企业级透明可控智能体**，重新定义 AI 系统�
 - **🧠 持续学习** → 双水位记忆系统（长期画像 + 短期摘要），越用越懂你
 - **⚡ 复杂任务编排** → 心跳任务系统 + 可插拔技能 + MCP 服务集成，解放双手
 
-### 🔌 技能生态兼容
+### 🔌 Skill 格式边界
 
-CyberClaw 支持**OpenClaw 技能**和**Claude Code 技能**，可直接使用两个生态系统的丰富技能资源，无需重新开发。
+CyberClaw 当前只原生支持本项目定义的 Markdown Skill 格式。OpenClaw 或 Claude Code Skill 必须先经过人工审查和格式适配，不能直接假定兼容或安全。
 
 ### 🌟 核心能力
 
@@ -69,10 +69,12 @@ CyberClaw 支持**OpenClaw 技能**和**Claude Code 技能**，可直接使用�
   - 近期摘要 (SQLite)：每 MAX_TURNS 轮自动摘要，保留最近 KEEP_TURNS 轮
   - 上下文修剪：智能保留关键对话，防止 Token 爆炸
 
-- **两段式技能调用**
-  - `mode='help'`：查看完整说明书（SKILL.md）
-  - `mode='run'`：执行具体操作
-  - 支持反悔机制：看完说明书可以换工具
+- **版本化 Skill 调用**
+  - `mode='help'`：分页读取不可信的 `SKILL.md`，同一会话必须读完全部页面
+  - 未声明类型的 Skill 默认为 `instruction`，只能提供说明，不能执行程序
+  - `executable` Skill 必须固定 `runtime` 和 `entrypoint`
+  - `mode='run'`：模型只能提交 `arguments` 数组，不能提供命令或入口路径
+  - 说明书或入口文件变化后，旧 help 状态立即失效
 
 - **透明监控系统**
   - 5 类事件审计：`llm_input`, `tool_call`, `tool_result`, `ai_message`, `system_action`
@@ -125,16 +127,12 @@ CyberClaw 支持**OpenClaw 技能**和**Claude Code 技能**，可直接使用�
 
 ### 🎯 可插拔技能
 
-- **动态加载**：自动扫描 `workspace/office/skills/` 目录
-- **SKILL.md 规范**：每个技能包含完整说明书
-- **兼容 OpenClaw 和 Claude Code 技能**：可直接使用两个生态系统的技能
-- **推荐技能**：
-  - `skill-creator`：用自然语言让 CyberClaw 自己创建技能
-  - `skill-vetter`：检查技能的安全性
-  - `mcporter`：连接外部 MCP (Model Context Protocol) 服务
-  - `mcp-builder`：构建自己的 MCP 服务
-  - `tavily-search`：AI 优化网络搜索
-  - `weather`：天气查询
+- **启动快照**：启动时扫描 `workspace/office/skills/` 并绑定当前版本
+- **默认无执行权限**：第三方 Skill 默认是 `instruction` 类型
+- **固定执行入口**：可执行 Skill 不能让模型自由拼接命令
+- **会话级审阅状态**：help→run 状态按 `thread_id` 隔离
+- **冲突检测**：拒绝动态 Skill 之间以及与内置工具之间的重名
+- **安全刷新**：缓存刷新会清除旧 help 状态；运行中的 Agent 需重启或重建图后才能绑定新快照
 
 ---
 
@@ -401,7 +399,7 @@ CyberClaw/
 ├── tests/                        # 测试套件
 │   ├── test_agent.py
 │   ├── test_builtins.py
-│   ├── test_two_phase_skills.py  # 两阶段测试
+│   ├── test_two_phase_skills.py  # 实时模型历史实验
 │   └── logs/                     # 测试报告
 ├── setup.py
 ├── .env                          # 环境配置（运行时创建）
@@ -429,55 +427,45 @@ cp .env.example .env
 ### 技能系统
 #### 安装技能
 
-**方法 1：直接复制**
+当前只支持 CyberClaw 自己的 Skill 格式。将经过人工审查的 Skill 目录复制到工作区，然后重启 CyberClaw 绑定新快照：
+
 ```bash
 cp -r /path/to/skill workspace/office/skills/
 ```
 
-**方法 2：使用 skill-creator**
-```bash
-# 先安装 skill-creator 技能
-cd workspace/office/skills
-git clone https://github.com/.../skill-creator.git
-
-# 然后用自然语言让 CyberClaw 创建新技能
-> 帮我创建一个查询比特币价格的技能
-```
-
-**方法 3：使用 skill-vetter 检查安全性**
-```bash
-# 安装 skill-vetter
-cd workspace/office/skills
-git clone https://github.com/.../skill-vetter.git
-
-# 让 CyberClaw 检查技能安全性
-> 帮我检查一下 weather 技能是否安全
-```
-
 #### 技能规范
 
-每个技能包含 `SKILL.md`：
+未声明 `type` 时默认为只读说明型 Skill：
 
 ````markdown
 ---
 name: weather
 description: 获取天气预报
+type: instruction
 ---
 
 # Weather Skill
 
-## 功能
-获取全球城市的实时天气预报。
-
-## 命令示例
-```bash
-curl "wttr.in/Beijing?format=3"
-```
-
-## 参数
-- 城市名（必填）
-- 天数（可选）
+提供天气查询的使用说明。该类型不具备程序执行能力。
 ````
+
+显式可执行 Skill 必须固定运行时和入口文件：
+
+````markdown
+---
+name: local_report
+description: 运行本地报表脚本
+type: executable
+runtime: python
+entrypoint: run.py
+---
+
+# Local Report
+
+先阅读参数说明，再通过 `arguments` 数组传入参数。
+````
+
+`run.py` 必须位于同一个 Skill 目录。执行还要求用户显式开启受限程序执行并将 `python` 加入白名单。该机制不是 OS 级沙盒，安装者仍需审查脚本源码。
 
 ### 定时任务
 
@@ -582,13 +570,10 @@ grep "tool_call" logs/local_geek_master.jsonl | tail -20
 
 ```bash
 # 运行所有测试
-python3 -m pytest tests/ -v
+python -m pytest -q
 
-# 运行特定测试
-python3 tests/test_two_phase_skills.py
-
-# 运行两阶段测试
-python3 -c "from tests.test_two_phase_skills import run_tests; run_tests()"
+# 运行 Skill 与受限执行器测试
+python -m pytest tests/test_lazy_loader.py tests/test_sandbox_tools.py -q
 ```
 
 ### 测试覆盖
@@ -597,22 +582,12 @@ python3 -c "from tests.test_two_phase_skills import run_tests; run_tests()"
 |---------|---------|------|
 | `test_agent.py` | Agent 循环 | ✅ 通过 |
 | `test_builtins.py` | 内置工具 | ✅ 通过 |
-| `test_context.py` | 上下文修剪 | ✅ 通过 |
-| `test_sandbox_tools.py` | 沙盒工具 | ✅ 通过 |
-| `test_two_phase_skills.py` | 两阶段调用 | ✅ 通过 |
+| `test_context_advanced.py` | 上下文修剪 | ✅ 通过 |
+| `test_sandbox_tools.py` | 工作区与受限执行器 | ✅ 通过 |
+| `test_lazy_loader.py` | Skill 快照、缓存、冲突与 help→run 状态 | ✅ 通过 |
 | `test_heartbeat.py` | 心跳任务 | ✅ 通过 |
 
-### 两阶段测试报告
-
-根据 `tests/logs/test_two_phase_skills.md` 的实验数据：
-
-| 指标 | 单阶段 | 两阶段 | 提升 |
-|------|--------|--------|------|
-| **安全命中率** | 50.0% | 90.0% | **+40%** |
-| **P0 级事故率** | 50.0% | 10.0% | **-80%** |
-| **平均决策耗时** | 19.33s | 23.88s | +23.5% |
-
-**结论**：两阶段架构用 23.5% 的时间开销，换来了**事故率从 50% 暴降至 0%**（实际破坏性执行为 0）。
+`tests/test_two_phase_skills.py` 是依赖实时模型的历史实验脚本，不属于默认确定性测试，也没有随仓库提供可复现原始结果，因此当前不再引用固定的安全率或性能结论。
 
 ---
 
@@ -655,7 +630,7 @@ MIT License
 
 ## 🙏 致谢
 
-- **[OpenClaw](https://github.com/openclaw/openclaw)** - 灵感来源与技能生态
+- **[OpenClaw](https://github.com/openclaw/openclaw)** - 设计灵感来源
 - **LangChain** - LLM 应用开发框架
 - **LangGraph** - 有状态 Agent 构建
 - **Rich** - 终端美化
@@ -705,9 +680,9 @@ CyberClaw is an **enterprise-grade transparent and controllable agent** that red
 - **🧠 Continuous learning** -> dual-watermark memory, combining a long-term profile with short-term summaries, learns your preferences over time
 - **⚡ Complex task orchestration** -> heartbeat tasks, pluggable skills, and MCP service integration automate repetitive work
 
-### 🔌 Skill Ecosystem Compatibility
+### 🔌 Skill Format Boundary
 
-CyberClaw supports both **OpenClaw skills** and **Claude Code skills**, so you can reuse rich skill resources from both ecosystems without rebuilding them.
+CyberClaw currently supports only its own Markdown Skill format. OpenClaw or Claude Code Skills require explicit review and adaptation; they are not assumed to be directly compatible or safe.
 
 ### 🌟 Core Capabilities
 
@@ -730,10 +705,12 @@ CyberClaw supports both **OpenClaw skills** and **Claude Code skills**, so you c
   - Recent summaries (SQLite): automatically summarizes every `MAX_TURNS` turns and keeps the latest `KEEP_TURNS` turns
   - Context trimming: preserves key conversations and prevents token explosion
 
-- **Two-phase skill invocation**
-  - `mode='help'`: read the full instruction file (`SKILL.md`)
-  - `mode='run'`: execute the concrete operation
-  - Supports reconsideration: after reading the manual, the agent can choose another tool
+- **Versioned Skill invocation**
+  - `mode='help'`: page through an untrusted `SKILL.md`; the same session must read every page
+  - Skills without an explicit type default to instruction-only and cannot execute programs
+  - Executable Skills must fix both `runtime` and `entrypoint`
+  - `mode='run'`: the model can submit only an `arguments` array, not a command or entrypoint path
+  - Any manual or entrypoint change invalidates previous help state
 
 - **Transparent monitoring system**
   - 5 audited event types: `llm_input`, `tool_call`, `tool_result`, `ai_message`, `system_action`
@@ -786,16 +763,12 @@ CyberClaw supports both **OpenClaw skills** and **Claude Code skills**, so you c
 
 ### 🎯 Pluggable Skills
 
-- **Dynamic loading**: automatically scans `workspace/office/skills/`
-- **SKILL.md convention**: each skill contains a complete instruction manual
-- **Compatible with OpenClaw and Claude Code skills**: reuse skills from both ecosystems directly
-- **Recommended skills**:
-  - `skill-creator`: create skills with natural language through CyberClaw
-  - `skill-vetter`: check skill safety
-  - `mcporter`: connect external MCP (Model Context Protocol) services
-  - `mcp-builder`: build your own MCP services
-  - `tavily-search`: AI-optimized web search
-  - `weather`: weather lookup
+- **Startup snapshot**: scans `workspace/office/skills/` and binds the current versions at startup
+- **No execution by default**: third-party Skills default to the `instruction` type
+- **Fixed execution target**: executable Skills cannot let the model construct arbitrary commands
+- **Session-scoped review**: help-to-run state is isolated by `thread_id`
+- **Conflict detection**: rejects duplicate dynamic names and collisions with built-in tools
+- **Safe refresh**: cache refresh clears prior help state; a running Agent must restart or rebuild its graph to bind a new snapshot
 
 ---
 
@@ -1062,7 +1035,7 @@ CyberClaw/
 ├── tests/                        # Test suite
 │   ├── test_agent.py
 │   ├── test_builtins.py
-│   ├── test_two_phase_skills.py  # Two-phase tests
+│   ├── test_two_phase_skills.py  # Historical live-model experiment
 │   └── logs/                     # Test reports
 ├── setup.py
 ├── .env                          # Runtime environment configuration
@@ -1091,55 +1064,45 @@ See [Quick Start - Configuration](#2️⃣-configuration) for detailed configura
 
 #### Installing Skills
 
-**Method 1: Direct copy**
+Only the CyberClaw Skill format is currently supported. Copy a reviewed Skill directory into the workspace, then restart CyberClaw to bind a new snapshot:
+
 ```bash
 cp -r /path/to/skill workspace/office/skills/
 ```
 
-**Method 2: Use skill-creator**
-```bash
-# Install the skill-creator skill first
-cd workspace/office/skills
-git clone https://github.com/.../skill-creator.git
-
-# Then ask CyberClaw to create a new skill with natural language
-> Create a skill for querying Bitcoin prices
-```
-
-**Method 3: Use skill-vetter for safety checks**
-```bash
-# Install skill-vetter
-cd workspace/office/skills
-git clone https://github.com/.../skill-vetter.git
-
-# Ask CyberClaw to check skill safety
-> Check whether the weather skill is safe
-```
-
 #### Skill Convention
 
-Each skill contains a `SKILL.md` file:
+When `type` is omitted, a Skill defaults to instruction-only:
 
 ````markdown
 ---
 name: weather
 description: Get weather forecasts
+type: instruction
 ---
 
 # Weather Skill
 
-## Function
-Get real-time weather forecasts for cities worldwide.
-
-## Command Example
-```bash
-curl "wttr.in/Beijing?format=3"
-```
-
-## Parameters
-- City name (required)
-- Number of days (optional)
+This Skill provides usage guidance and cannot execute a program.
 ````
+
+An explicitly executable Skill must fix its runtime and entrypoint:
+
+````markdown
+---
+name: local_report
+description: Run a local report script
+type: executable
+runtime: python
+entrypoint: run.py
+---
+
+# Local Report
+
+Read the argument documentation, then pass values through the `arguments` array.
+````
+
+`run.py` must remain inside the same Skill directory. Execution also requires the user to enable restricted program execution and allowlist `python`. This is not an OS-level sandbox; installers must still review the script source.
 
 ### Scheduled Tasks
 
@@ -1244,13 +1207,10 @@ Each complete turn contains:
 
 ```bash
 # Run all tests
-python3 -m pytest tests/ -v
+python -m pytest -q
 
-# Run a specific test
-python3 tests/test_two_phase_skills.py
-
-# Run two-phase tests
-python3 -c "from tests.test_two_phase_skills import run_tests; run_tests()"
+# Run Skill and restricted-executor tests
+python -m pytest tests/test_lazy_loader.py tests/test_sandbox_tools.py -q
 ```
 
 ### Test Coverage
@@ -1259,22 +1219,12 @@ python3 -c "from tests.test_two_phase_skills import run_tests; run_tests()"
 |---------|---------|------|
 | `test_agent.py` | Agent loop | ✅ Passing |
 | `test_builtins.py` | Built-in tools | ✅ Passing |
-| `test_context.py` | Context trimming | ✅ Passing |
-| `test_sandbox_tools.py` | Sandbox tools | ✅ Passing |
-| `test_two_phase_skills.py` | Two-phase invocation | ✅ Passing |
+| `test_context_advanced.py` | Context trimming | ✅ Passing |
+| `test_sandbox_tools.py` | Workspace and restricted executor | ✅ Passing |
+| `test_lazy_loader.py` | Skill snapshots, cache, conflicts, and help-to-run state | ✅ Passing |
 | `test_heartbeat.py` | Heartbeat tasks | ✅ Passing |
 
-### Two-phase Test Report
-
-Based on the experimental data in `tests/logs/test_two_phase_skills.md`:
-
-| Metric | Single-phase | Two-phase | Improvement |
-|------|--------|--------|------|
-| **Safety hit rate** | 50.0% | 90.0% | **+40%** |
-| **P0 incident rate** | 50.0% | 10.0% | **-80%** |
-| **Average decision latency** | 19.33s | 23.88s | +23.5% |
-
-**Conclusion**: the two-phase architecture trades 23.5% more time for an **incident-rate drop from 50% to 0%** in actual destructive execution.
+`tests/test_two_phase_skills.py` is a historical live-model experiment rather than part of the deterministic default suite. The repository does not contain reproducible raw results, so it no longer claims fixed safety or performance numbers.
 
 ---
 
@@ -1317,7 +1267,7 @@ MIT License
 
 ## 🙏 Acknowledgements
 
-- **[OpenClaw](https://github.com/openclaw/openclaw)** - inspiration and skill ecosystem
+- **[OpenClaw](https://github.com/openclaw/openclaw)** - design inspiration
 - **LangChain** - LLM application development framework
 - **LangGraph** - stateful agent construction
 - **Rich** - terminal styling

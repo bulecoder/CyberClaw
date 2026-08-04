@@ -1,4 +1,5 @@
 import os
+from collections.abc import Sequence
 from pathlib import Path, PureWindowsPath
 import platform
 import shlex
@@ -143,8 +144,8 @@ def _reject_unsafe_argument_path(argument: str) -> None:
         raise PermissionError("命令参数禁止使用绝对路径或用户目录路径")
 
 
-def _parse_restricted_command(command: str) -> tuple[list[str], str]:
-    """Parse an operator-approved command without invoking a system shell."""
+def _parse_restricted_command(command: str) -> list[str]:
+    """Parse a command string without invoking a system shell."""
     if not isinstance(command, str) or not command.strip():
         raise ValueError("命令不能为空")
     if len(command) > _MAX_SHELL_COMMAND_CHARS:
@@ -160,12 +161,21 @@ def _parse_restricted_command(command: str) -> tuple[list[str], str]:
 
     if SYS_OS == "Windows":
         argv = [_strip_windows_quotes(value) for value in argv]
+    return argv
+
+
+def _validate_restricted_argv(argv: Sequence[str]) -> tuple[list[str], str]:
+    """Validate argv from either the generic tool or a fixed Skill entrypoint."""
     if not argv:
         raise ValueError("命令不能为空")
     if len(argv) > _MAX_SHELL_ARGUMENTS:
         raise ValueError(f"命令参数不能超过 {_MAX_SHELL_ARGUMENTS - 1} 个")
+    if any(not isinstance(argument, str) for argument in argv):
+        raise ValueError("程序名称和参数必须全部是字符串")
 
-    executable = argv[0]
+    normalized_argv = list(argv)
+
+    executable = normalized_argv[0]
     if (
         Path(executable).name != executable
         or PureWindowsPath(executable).name != executable
@@ -194,13 +204,16 @@ def _parse_restricted_command(command: str) -> tuple[list[str], str]:
         else normalized_executable
     )
     forbidden_flags = _INLINE_CODE_FLAGS.get(flag_group, frozenset())
-    if any(argument.casefold() in forbidden_flags for argument in argv[1:]):
+    if any(
+        argument.casefold() in forbidden_flags
+        for argument in normalized_argv[1:]
+    ):
         raise PermissionError("禁止使用解释器的内联代码或模块执行参数")
 
-    for argument in argv[1:]:
+    for argument in normalized_argv[1:]:
         _reject_unsafe_argument_path(argument)
 
-    return argv, normalized_executable
+    return normalized_argv, normalized_executable
 
 
 def _build_restricted_subprocess_env(office_dir: str) -> dict[str, str]:
@@ -241,6 +254,73 @@ def _read_bounded_process_output(stream) -> tuple[str, bool]:
     stream.seek(max(0, total_bytes - _MAX_SHELL_OUTPUT_BYTES))
     output = stream.read(_MAX_SHELL_OUTPUT_BYTES).decode("utf-8", errors="replace")
     return output.strip(), total_bytes > _MAX_SHELL_OUTPUT_BYTES
+
+
+def _execute_restricted_argv(argv: Sequence[str]) -> str:
+    """Execute validated argv inside office with a minimal child environment."""
+    if not _shell_execution_enabled():
+        return (
+            "❌ 程序执行默认关闭。若确有需要，请由用户显式配置 "
+            f"{_SHELL_ENABLED_ENV}=true，并在 {_SHELL_ALLOWLIST_ENV} 中列出允许的程序。"
+        )
+
+    try:
+        safe_argv, normalized_executable = _validate_restricted_argv(argv)
+        office_dir = str(Path(OFFICE_DIR).resolve(strict=False))
+        child_env = _build_restricted_subprocess_env(office_dir)
+        executable_path = shutil.which(safe_argv[0], path=child_env.get("PATH"))
+        if executable_path is None:
+            return f"❌ 执行异常：找不到白名单程序 '{safe_argv[0]}'。"
+
+        with tempfile.TemporaryFile(mode="w+b") as stdout_file, \
+             tempfile.TemporaryFile(mode="w+b") as stderr_file:
+            result = subprocess.run(
+                [executable_path, *safe_argv[1:]],
+                shell=False,
+                cwd=office_dir,
+                env=child_env,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                timeout=_SHELL_TIMEOUT_SECONDS,
+                check=False,
+            )
+            stdout, stdout_truncated = _read_bounded_process_output(stdout_file)
+            stderr, stderr_truncated = _read_bounded_process_output(stderr_file)
+
+        output = f" ● 当前系统: {SYS_OS}\n"
+        output += (
+            f" ● 执行程序: `{normalized_executable}`"
+            f"（{len(safe_argv) - 1} 个参数）\n"
+        )
+        output += f" ● 退出码 (Exit Code): {result.returncode}\n"
+
+        if stdout:
+            marker = "...[较早输出已截断]...\n" if stdout_truncated else ""
+            output += f"\n[STDOUT]\n{marker}{stdout}"
+        if stderr:
+            marker = "...[较早错误输出已截断]...\n" if stderr_truncated else ""
+            output += f"\n[STDERR]\n{marker}{stderr}"
+
+        if not stdout and not stderr:
+            if result.returncode == 0:
+                output += "\n(静默执行完毕：无终端输出)"
+            else:
+                output += "\n(异常退出：Exit Code 非 0，无错误日志输出)"
+
+        return output
+
+    except (PermissionError, ValueError) as exc:
+        return f"❌ 权限拒绝：{exc}"
+    except subprocess.TimeoutExpired:
+        return f"❌ 执行超时：程序运行超过 {_SHELL_TIMEOUT_SECONDS} 秒，已终止。"
+    except Exception as exc:
+        return f"❌ 执行异常：{exc}"
+
+
+def execute_office_program(executable: str, arguments: Sequence[str]) -> str:
+    """Run a fixed executable with structured arguments for an approved Skill."""
+    return _execute_restricted_argv([executable, *arguments])
 
 
 def _get_safe_path(relative_path: str) -> str:
@@ -373,58 +453,9 @@ def execute_office_shell(command: str) -> str:
     重定向、命令连接、绝对路径和父目录跳转。子进程只获得最小化环境，
     不继承模型 API Key。该能力是受限执行器，不是操作系统级安全沙盒。
     """
-    if not _shell_execution_enabled():
-        return (
-            "❌ Shell 执行默认关闭。若确有需要，请由用户显式配置 "
-            f"{_SHELL_ENABLED_ENV}=true，并在 {_SHELL_ALLOWLIST_ENV} 中列出允许的程序。"
-        )
-
     try:
-        argv, normalized_executable = _parse_restricted_command(command)
-        office_dir = str(Path(OFFICE_DIR).resolve(strict=False))
-        child_env = _build_restricted_subprocess_env(office_dir)
-        executable_path = shutil.which(argv[0], path=child_env.get("PATH"))
-        if executable_path is None:
-            return f"❌ 执行异常：找不到白名单程序 '{argv[0]}'。"
-
-        with tempfile.TemporaryFile(mode="w+b") as stdout_file, \
-             tempfile.TemporaryFile(mode="w+b") as stderr_file:
-            result = subprocess.run(
-                [executable_path, *argv[1:]],
-                shell=False,
-                cwd=office_dir,
-                env=child_env,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                timeout=_SHELL_TIMEOUT_SECONDS,
-                check=False,
-            )
-            stdout, stdout_truncated = _read_bounded_process_output(stdout_file)
-            stderr, stderr_truncated = _read_bounded_process_output(stderr_file)
-
-        output = f" ● 当前系统: {SYS_OS}\n"
-        output += f" ● 执行程序: `{normalized_executable}`（{len(argv) - 1} 个参数）\n"
-        output += f" ● 退出码 (Exit Code): {result.returncode}\n"
-
-        if stdout:
-            marker = "...[较早输出已截断]...\n" if stdout_truncated else ""
-            output += f"\n[STDOUT]\n{marker}{stdout}"
-        if stderr:
-            marker = "...[较早错误输出已截断]...\n" if stderr_truncated else ""
-            output += f"\n[STDERR]\n{marker}{stderr}"
-
-        if not stdout and not stderr:
-            if result.returncode == 0:
-                output += "\n(静默执行完毕：无终端输出)"
-            else:
-                output += "\n(异常退出：Exit Code 非 0，无错误日志输出)"
-
-        return output
-
+        return _execute_restricted_argv(_parse_restricted_command(command))
     except (PermissionError, ValueError) as exc:
         return f"❌ 权限拒绝：{exc}"
-    except subprocess.TimeoutExpired:
-        return f"❌ 执行超时：程序运行超过 {_SHELL_TIMEOUT_SECONDS} 秒，已终止。"
-    except Exception as e:
-        return f"❌ 执行异常：{str(e)}"
+    except Exception as exc:
+        return f"❌ 执行异常：{exc}"

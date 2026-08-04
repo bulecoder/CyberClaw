@@ -253,20 +253,24 @@ ToolCall
 
 即使移除 `__builtins__`，Python 对象模型仍使 `eval()` 不适合作为不可信表达式计算器。应改为 AST 白名单解析，只允许数字、括号和规定的算术运算符，并限制表达式长度、数字范围和计算复杂度。
 
-### P0-5 Skill 可形成任意 Shell 执行通道 `[CCL][LCC]`
+### P0-5 Skill 可形成任意 Shell 执行通道 `[CCL][LCC]`（第一轮修复已完成）
 
 位置：`cyberclaw/core/skill_loader.py`
 
-当前 Skill 正文可影响模型，`run` 又执行模型提供的命令；help/run 两阶段只是建议，没有程序状态约束。恶意或错误 Skill 可能造成提示注入和命令执行。
+原实现让 Skill 正文影响模型，并在 `run` 阶段执行模型提供的任意命令；help/run 两阶段只是建议，没有程序状态约束。
 
-改进：
+已完成的第一轮修复：
 
 - 区分 instruction-only Skill 与 executable Skill；
-- 通过 `skill_id` 从 registry 加载，模型不能提供任意路径；
-- 可执行 Skill 声明固定入口、参数 schema、风险和版本；
-- 执行仍经过统一 Policy/Approval；
-- 记录 Skill 来源、哈希和批准状态；
-- 用户安装的第三方 Skill 默认不可信。
+- 未声明类型的第三方 Skill 默认只有说明能力；
+- executable Skill 必须在 registry 中固定 `runtime` 和 `entrypoint`；
+- 模型只能提交结构化 `arguments`，不能提供程序、命令字符串或入口路径；
+- help→run 状态按 `thread_id` 隔离，并要求读完当前版本全部页面；
+- 说明书或入口文件变化后，旧快照和旧 help 状态不能继续执行；
+- 拒绝 Skill 路径逃逸、符号链接入口和工具名称冲突；
+- Skill 文本明确标记为不可信内容，README 不再宣称直接兼容其他 Skill 生态。
+
+剩余边界：统一 Tool Policy、逐次用户审批、风险分级和结构化审计将在后续 Tool Runtime 阶段实现；instruction 文本仍可能影响模型，因此不能把 Prompt 包装当成提示注入隔离。
 
 ### P0-6 日志可能泄露敏感数据 `[CCL]`
 
@@ -356,11 +360,11 @@ tool_call_id → 一次工具调用
 
 当前全局 singleton 在导入时启动 daemon thread，队列无界；重复 shutdown 可能等待一个已经结束的线程；写失败后事件直接丢失。应改为显式生命周期、幂等 close、有界队列、刷新策略和降级统计。
 
-### P1-7 Skill 热更新与实际工具绑定不一致 `[CCL][LCC]`
+### P1-7 Skill 热更新与实际工具绑定不一致 `[CCL][LCC]`（第一轮修复已完成）
 
 位置：`skill_loader.py`、`agent.py`
 
-问题包括：
+原实现问题包括：
 
 - `_cache_size` 参数没有真正控制固定装饰器缓存；
 - `reload_skills` 声称清缓存但未执行 cache clear；
@@ -368,7 +372,9 @@ tool_call_id → 一次工具调用
 - running graph 的 ToolNode 和 `bind_tools()` 在创建时固定，新 registry 不会自动更新；
 - 完整说明被截断到 3000 字符。
 
-改进：Tool Registry 负责版本和快照；Skill 刷新产生 registry version；新 run 使用新快照，正在执行的 run 保持原版本，避免中途 schema 改变。
+已完成的第一轮修复：使用实例级有界 LRU 内容缓存，`cache_size` 会真正生效；刷新会同时清除内容缓存和 help 状态；每个工具闭包持有版本快照，源文件变化后旧快照拒绝执行；说明书支持分页读取；动态工具与内置工具执行名称冲突检测。
+
+当前采用明确的“启动快照”语义：运行中 LangGraph 的 `ToolNode` 和 `bind_tools()` 保持原工具集合，刷新后需要重启或重建 Agent 图才能绑定新快照，不再宣称自动热更新。
 
 ### P1-8 Provider 缺少统一恢复与用量层 `[CCL][LCC][CC]`
 
@@ -459,15 +465,15 @@ Monitor 不显示 `ai_message`，却保留从未产生的 `system_action` 分支
 | Heartbeat 独立后台进程，主程序退出后仍工作 | 实际是在 `entry/main.py` 内创建的协程，没有独立服务入口 | 改为“随 CLI 生命周期运行的后台协程”，或真正拆独立 scheduler |
 | 英文 README 每秒检查任务 | `main.py` 实际传入约 10 秒间隔 | 文档和默认配置统一 |
 | `read_user_profile` 后再保存 | 没有这个工具，只有 Agent 节点直接读取 profile 文件 | 增加明确只读能力或删除错误说明 |
-| Skill help 返回完整说明书 | 实现最多返回前 3000 字符 | 分页/引用完整内容，或明确截断规则 |
-| Skill 自动热更新 | registry 可重扫，但运行中图的绑定工具不会同步更新，缓存也未正确清理 | 引入版本化 registry 和 run 快照后再声明 |
-| 兼容 Claude Code/OpenClaw Skills | 当前假设 Markdown 可转成 Shell command，不支持完整技能语义和生命周期 | 只声明本项目 Skill 格式；需要时做适配器和兼容测试 |
+| Skill help 返回完整说明书 | 已改为 3000 字符分页，并要求 executable Skill 在当前会话读完全部页面 | 已修复，不再声称单次返回全文 |
+| Skill 自动热更新 | 已实现版本化启动快照和正确缓存刷新；运行图需重启或重建 | 已修复描述，不宣称自动热更新 |
+| 兼容 Claude Code/OpenClaw Skills | 当前只支持本项目 Markdown Skill 格式 | 已修复描述；其他生态需要适配器和兼容测试 |
 | SQLite 保存完整短期记忆/完整历史 | Agent 会裁剪当前消息视图，应用也没有完整 transcript 浏览和恢复语义 | 区分 checkpoint、完整事件日志和模型 Context View |
 | 双水位记忆 | 实际更接近“画像 + 对话摘要”两类记忆，不是两个数值水位 | 使用准确术语“用户画像与会话摘要” |
 | 持续学习 | 实际由模型决定整文件覆盖用户画像，没有提取、冲突、整合和遗忘机制 | 改称“显式用户画像保存”；完成 Memory Pipeline 后再升级 |
-| 测试文档引用 `tests/test_context.py` | 实际文件名是 `test_context_advanced.py` | 修正文档路径 |
-| 示例从 `test_two_phase_skills.py` 导入 `run_tests` | 文件没有该函数，只有实验入口，且没有 pytest test function | 修复示例并区分实验与自动测试 |
-| 存在 `tests/logs/test_two_phase_skills.md` | 仓库未包含该文件 | 删除引用或提交可复现实验报告 |
+| 测试文档引用 `tests/test_context.py` | README 已改为实际文件名 `test_context_advanced.py` | 已修复 |
+| 示例从 `test_two_phase_skills.py` 导入 `run_tests` | README 已删除无效命令，并将该文件标为实时模型历史实验 | 已修复 |
+| 存在 `tests/logs/test_two_phase_skills.md` | README 已删除不存在的报告引用和固定实验数字 | 已修复 |
 | Skill Development 文档链接 | 对应文件缺失 | 补文档或删除链接 |
 | 99.98% 提速、80% 内存节省等结果 | 缺少可复现 benchmark、原始数据和统计方法 | 删除或标记历史声明；重新测量后再填写 |
 | 安全测试“破坏性执行率”结论 | 测试脚本依赖实时模型，表格与结论数字还不一致 | 建立固定用例、版本、模型、重复次数和原始结果 |

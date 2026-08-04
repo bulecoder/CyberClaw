@@ -1,169 +1,238 @@
-"""
-测试懒加载技能加载器
-"""
 import os
-import sys
-import time
 import tempfile
-import shutil
-import importlib
+import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-# 添加项目路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from cyberclaw.core.skill_loader import load_dynamic_skills, get_skill_count, reload_skills, clear_skill_cache
+from cyberclaw.core.skill_loader import LazySkillLoader
 
 
-def create_test_skills(test_dir: str, num_skills: int = 5):
-    """创建测试技能"""
-    skills_dir = os.path.join(test_dir, "office", "skills")
-    os.makedirs(skills_dir, exist_ok=True)
-    
-    for i in range(num_skills):
-        skill_dir = os.path.join(skills_dir, f"test_skill_{i}")
-        os.makedirs(skill_dir, exist_ok=True)
-        
-        skill_content = f"""name: Test Skill {i}
-description: 这是第 {i} 个测试技能，用于验证懒加载机制
-
-## 详细说明
-
-这是一个测试技能的详细文档内容。
-它应该有足够的内容来测试缓存机制。
-
-## 使用方法
-
-1. 先调用 mode='help' 查看此文档
-2. 然后调用 mode='run' 执行命令
-
-命令示例：
-```bash
-echo "Skill {i} executed"
-```
-"""
-        
-        with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
-            f.write(skill_content)
-    
-    return skills_dir
+def _config(thread_id: str) -> dict:
+    return {"configurable": {"thread_id": thread_id}}
 
 
-def test_lazy_loading():
-    """测试懒加载功能"""
-    print("=" * 60)
-    print("测试 1: 基本懒加载功能")
-    print("=" * 60)
-    
-    # 创建临时测试目录
-    temp_dir = tempfile.mkdtemp(prefix="cyberclaw_test_")
-    skills_dir = create_test_skills(temp_dir, num_skills=5)
-    
-    # 修改环境变量指向测试目录
-    original_env = os.environ.get("CYBERCLAW_WORKSPACE")
-    os.environ["CYBERCLAW_WORKSPACE"] = temp_dir
-    
-    try:
-        # 重新导入配置以使用测试目录
-        import cyberclaw.core.config as config_module
-        importlib.reload(config_module)
-        
-        # 重新导入 skill_loader 以使用新的 SKILLS_DIR
-        import cyberclaw.core.skill_loader as skill_loader_module
-        importlib.reload(skill_loader_module)
-        
-        # 清除缓存
-        skill_loader_module.clear_skill_cache()
-        
-        # 测试 1: 扫描技能
-        print(f"\n[测试 1.1] 扫描技能目录...")
-        count = skill_loader_module.get_skill_count()
-        print(f"[OK] 扫描到 {count} 个技能")
-        assert count == 5, f"期望 5 个技能，实际 {count} 个"
-        
-        # 测试 2: 获取工具（懒加载占位符）
-        print(f"\n[测试 1.2] 获取工具列表（懒加载）...")
-        start_time = time.time()
-        tools = skill_loader_module.load_dynamic_skills()
-        elapsed = time.time() - start_time
-        print(f"[OK] 获取 {len(tools)} 个工具，耗时: {elapsed:.4f}秒")
-        assert len(tools) == 5, f"期望 5 个工具，实际 {len(tools)} 个"
-        
-        # 测试 3: 验证工具属性
-        print(f"\n[测试 1.3] 验证工具属性...")
-        for i, tool in enumerate(tools):
-            print(f"  - 工具 {i}: {tool.name}")
-            assert "lazy_runner" in str(tool.func), f"工具 {tool.name} 不是懒加载函数"
-        print(f"[OK] 所有工具都是懒加载模式")
-        
-        # 测试 4: 模拟首次调用（触发完整加载）
-        print(f"\n[测试 1.4] 模拟首次调用技能（触发完整内容加载）...")
-        start_time = time.time()
-        result = tools[0].func(mode='help')
-        elapsed = time.time() - start_time
-        print(f"[OK] 首次调用耗时: {elapsed:.4f}秒")
-        print(f"[OK] 结果预览: {result[:100]}...")
-        assert "Test Skill 0" in result, "技能内容未正确加载"
-        
-        # 测试 5: 第二次调用（应该使用缓存）
-        print(f"\n[测试 1.5] 第二次调用（应该使用缓存）...")
-        start_time = time.time()
-        result2 = tools[0].func(mode='help')
-        elapsed2 = time.time() - start_time
-        print(f"[OK] 第二次调用耗时: {elapsed2:.4f}秒")
-        if elapsed2 > 0:
-            print(f"[OK] 速度提升: {(elapsed / elapsed2):.2f}x")
-        else:
-            print(f"[OK] 速度提升: 缓存响应极快 (< 0.001s)")
-        assert elapsed2 <= elapsed, "第二次调用应该更快或相等（使用缓存）"
-        
-        print("\n" + "=" * 60)
-        print("测试 2: 强制重新扫描")
-        print("=" * 60)
-        
-        # 测试 6: 添加新技能
-        print(f"\n[测试 2.1] 添加新技能...")
-        new_skill_dir = os.path.join(skills_dir, "new_skill")
-        os.makedirs(new_skill_dir, exist_ok=True)
-        with open(os.path.join(new_skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
-            f.write("name: New Skill\ndescription: 新添加的技能")
-        
-        # 强制重新扫描
-        print(f"\n[测试 2.2] 强制重新扫描...")
-        skill_loader_module.reload_skills()
-        count_after = skill_loader_module.get_skill_count()
-        print(f"[OK] 扫描后技能数: {count_after}")
-        assert count_after == 6, f"期望 6 个技能，实际 {count_after} 个"
-        
-        print("\n" + "=" * 60)
-        print("测试 3: 缓存清除")
-        print("=" * 60)
-        
-        # 测试 7: 清除缓存
-        print(f"\n[测试 3.1] 清除缓存...")
-        skill_loader_module.clear_skill_cache()
-        
-        # 再次调用应该重新加载
-        print(f"\n[测试 3.2] 缓存清除后首次调用...")
-        start_time = time.time()
-        result3 = tools[0].func(mode='help')
-        elapsed3 = time.time() - start_time
-        print(f"[OK] 缓存清除后调用耗时: {elapsed3:.4f}秒")
-        
-        print("\n" + "=" * 60)
-        print("[PASS] 所有测试通过！")
-        print("=" * 60)
-        
-    finally:
-        # 恢复原始环境变量
-        if original_env is not None:
-            os.environ["CYBERCLAW_WORKSPACE"] = original_env
-        else:
-            os.environ.pop("CYBERCLAW_WORKSPACE", None)
-        
-        # 清理临时目录
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        print(f"\n[OK] 临时测试目录已清理")
+class TestLazySkillLoader(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.office_dir = Path(self.temp_dir.name) / "office"
+        self.skills_dir = self.office_dir / "skills"
+        self.skills_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _write_skill(
+        self,
+        folder: str,
+        manifest: str,
+        entrypoint: tuple[str, str] | None = None,
+    ) -> Path:
+        skill_dir = self.skills_dir / folder
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(manifest, encoding="utf-8")
+        if entrypoint:
+            relative_path, content = entrypoint
+            entrypoint_path = skill_dir / relative_path
+            entrypoint_path.parent.mkdir(parents=True, exist_ok=True)
+            entrypoint_path.write_text(content, encoding="utf-8")
+        return skill_dir
+
+    def _loader(self, cache_size: int = 50) -> LazySkillLoader:
+        return LazySkillLoader(
+            cache_size=cache_size,
+            skills_dir=self.skills_dir,
+            office_dir=self.office_dir,
+        )
+
+    def test_instruction_skill_is_lazy_and_cannot_run(self):
+        self._write_skill(
+            "guide",
+            "name: Guide\ndescription: 学习说明\n\n这是说明正文。",
+        )
+        loader = self._loader()
+
+        tools = loader.get_all_tools()
+
+        self.assertEqual([tool.name for tool in tools], ["Guide"])
+        self.assertEqual(loader.content_cache_entries, 0)
+        help_result = tools[0].invoke(
+            {"mode": "help", "page": 1}, config=_config("thread-a")
+        )
+        run_result = tools[0].invoke(
+            {"mode": "run", "arguments": []}, config=_config("thread-a")
+        )
+        self.assertIn("这是说明正文", help_result)
+        self.assertIn("instruction 类型", run_result)
+        self.assertEqual(loader.content_cache_entries, 1)
+
+    @patch(
+        "cyberclaw.core.skill_loader.execute_office_program",
+        return_value="executed",
+    )
+    def test_executable_skill_fixes_runtime_entrypoint_and_arguments(
+        self, mock_execute
+    ):
+        self._write_skill(
+            "safe_runner",
+            (
+                "name: Safe Runner\n"
+                "description: 执行本地测试脚本\n"
+                "type: executable\n"
+                "runtime: python\n"
+                "entrypoint: run.py\n\n"
+                "只允许使用固定入口。"
+            ),
+            entrypoint=("run.py", "print('ok')\n"),
+        )
+        tool = self._loader().get_all_tools()[0]
+
+        denied_before_help = tool.invoke(
+            {"mode": "run", "arguments": ["--name", "test"]},
+            config=_config("thread-a"),
+        )
+        tool.invoke({"mode": "help", "page": 1}, config=_config("thread-a"))
+        denied_other_thread = tool.invoke(
+            {"mode": "run", "arguments": []},
+            config=_config("thread-b"),
+        )
+        result = tool.invoke(
+            {"mode": "run", "arguments": ["--name", "test"]},
+            config=_config("thread-a"),
+        )
+
+        self.assertIn("必须先", denied_before_help)
+        self.assertIn("必须先", denied_other_thread)
+        self.assertEqual(result, "executed")
+        mock_execute.assert_called_once_with(
+            "python",
+            ["skills/safe_runner/run.py", "--name", "test"],
+        )
+
+    @patch(
+        "cyberclaw.core.skill_loader.execute_office_program",
+        return_value="executed",
+    )
+    def test_all_help_pages_are_required_before_run(self, mock_execute):
+        self._write_skill(
+            "long_manual",
+            (
+                "name: Long Manual\n"
+                "description: 长说明书\n"
+                "type: executable\n"
+                "runtime: python\n"
+                "entrypoint: run.py\n\n"
+                + "x" * 3_500
+            ),
+            entrypoint=("run.py", "print('ok')\n"),
+        )
+        tool = self._loader().get_all_tools()[0]
+        config = _config("thread-a")
+
+        first_page = tool.invoke({"mode": "help", "page": 1}, config=config)
+        denied = tool.invoke({"mode": "run", "arguments": []}, config=config)
+        second_page = tool.invoke({"mode": "help", "page": 2}, config=config)
+        result = tool.invoke({"mode": "run", "arguments": []}, config=config)
+
+        self.assertIn("1/2", first_page)
+        self.assertIn("尚未读完", denied)
+        self.assertIn("2/2", second_page)
+        self.assertEqual(result, "executed")
+        mock_execute.assert_called_once()
+
+    @patch("cyberclaw.core.skill_loader.execute_office_program")
+    def test_changed_entrypoint_invalidates_help_approval(self, mock_execute):
+        skill_dir = self._write_skill(
+            "mutable",
+            (
+                "name: Mutable\n"
+                "description: 可变入口测试\n"
+                "type: executable\n"
+                "runtime: python\n"
+                "entrypoint: run.py\n"
+            ),
+            entrypoint=("run.py", "print('old')\n"),
+        )
+        tool = self._loader().get_all_tools()[0]
+        config = _config("thread-a")
+        tool.invoke({"mode": "help", "page": 1}, config=config)
+
+        (skill_dir / "run.py").write_text(
+            "print('new and different')\n", encoding="utf-8"
+        )
+        result = tool.invoke({"mode": "run", "arguments": []}, config=config)
+
+        self.assertIn("入口文件已变化", result)
+        mock_execute.assert_not_called()
+
+    def test_configured_lru_cache_size_is_honored(self):
+        self._write_skill("one", "name: One\ndescription: one\n")
+        self._write_skill("two", "name: Two\ndescription: two\n")
+        loader = self._loader(cache_size=1)
+        tools = loader.get_all_tools()
+
+        for tool in tools:
+            tool.invoke({"mode": "help", "page": 1}, config=_config("thread-a"))
+
+        self.assertEqual(loader.content_cache_entries, 1)
+
+    def test_reload_clears_cache_and_old_snapshot_detects_change(self):
+        skill_dir = self._write_skill(
+            "reloadable",
+            "name: Reloadable\ndescription: old description\nold body",
+        )
+        loader = self._loader()
+        old_tool = loader.get_all_tools()[0]
+        old_tool.invoke({"mode": "help", "page": 1}, config=_config("thread-a"))
+
+        (skill_dir / "SKILL.md").write_text(
+            "name: Reloadable\ndescription: new description\nnew body is longer",
+            encoding="utf-8",
+        )
+        new_tool = loader.reload_tools()[0]
+        stale_result = old_tool.invoke(
+            {"mode": "help", "page": 1}, config=_config("thread-a")
+        )
+
+        self.assertIn("new description", new_tool.description)
+        self.assertIn("已变化", stale_result)
+        self.assertEqual(loader.content_cache_entries, 0)
+
+    def test_duplicate_and_reserved_tool_names_are_rejected(self):
+        self._write_skill("first", "name: Duplicate Skill\ndescription: first")
+        self._write_skill("second", "name: Duplicate@Skill\ndescription: second")
+        self._write_skill("reserved", "name: Calculator\ndescription: conflict")
+        self._write_skill("safe", "name: Safe Guide\ndescription: safe")
+
+        tools = self._loader().get_all_tools(reserved_names={"calculator"})
+
+        self.assertEqual([tool.name for tool in tools], ["Safe_Guide"])
+
+    def test_executable_skill_cannot_escape_with_entrypoint(self):
+        self._write_skill(
+            "escape",
+            (
+                "name: Escape\n"
+                "description: invalid\n"
+                "type: executable\n"
+                "runtime: python\n"
+                "entrypoint: ../outside.py\n"
+            ),
+        )
+        (self.skills_dir / "outside.py").write_text("print('bad')", encoding="utf-8")
+
+        tools = self._loader().get_all_tools()
+
+        self.assertEqual(tools, [])
+
+    def test_missing_skills_directory_returns_empty_list(self):
+        missing_dir = self.office_dir / "missing"
+        loader = LazySkillLoader(
+            skills_dir=missing_dir,
+            office_dir=self.office_dir,
+        )
+
+        self.assertEqual(loader.get_all_tools(), [])
 
 
 if __name__ == "__main__":
-    test_lazy_loading()
+    unittest.main()
