@@ -11,6 +11,8 @@ from cyberclaw.core.tools import (
     ToolRegistry,
     ToolResultStatus,
     ToolSource,
+    build_interrupted_tool_messages,
+    find_pending_tool_calls,
 )
 from cyberclaw.core.runtime import AgentRunLimits
 
@@ -183,6 +185,67 @@ class TestToolExecutorResultClassification(unittest.TestCase):
 
 
 class TestToolExecutorNodeProtocol(unittest.TestCase):
+    def test_interruption_backfill_only_pairs_missing_terminal_calls(self):
+        ai_message = AIMessage(
+            content="",
+            tool_calls=[
+                _call("echo_tool", {"value": "done"}, "call-1"),
+                _call("echo_tool", {"value": "pending"}, "call-2"),
+            ],
+        )
+        existing_result = ToolMessage(
+            content="echo:done",
+            name="echo_tool",
+            tool_call_id="call-1",
+        )
+        messages = [
+            HumanMessage(content="run both"),
+            ai_message,
+            existing_result,
+        ]
+
+        pending = find_pending_tool_calls(messages)
+        placeholders = build_interrupted_tool_messages(messages)
+
+        self.assertEqual([call["id"] for call in pending], ["call-2"])
+        self.assertEqual(len(placeholders), 1)
+        self.assertEqual(placeholders[0].tool_call_id, "call-2")
+        self.assertEqual(placeholders[0].status, "error")
+        self.assertEqual(
+            placeholders[0].artifact["cyberclaw_tool_result"]["status"],
+            "interrupted",
+        )
+
+        repaired_messages = messages + placeholders
+        self.assertEqual(find_pending_tool_calls(repaired_messages), [])
+        self.assertEqual(build_interrupted_tool_messages(repaired_messages), [])
+
+    def test_interruption_backfill_ignores_completed_or_nonterminal_calls(self):
+        completed_ai = AIMessage(
+            content="",
+            tool_calls=[_call("echo_tool", {"value": "ok"}, "call-1")],
+        )
+        completed = [
+            HumanMessage(content="run"),
+            completed_ai,
+            ToolMessage(
+                content="echo:ok",
+                name="echo_tool",
+                tool_call_id="call-1",
+            ),
+        ]
+        old_pending_followed_by_new_input = [
+            HumanMessage(content="old"),
+            completed_ai,
+            HumanMessage(content="new"),
+        ]
+
+        self.assertEqual(build_interrupted_tool_messages(completed), [])
+        self.assertEqual(
+            build_interrupted_tool_messages(old_pending_followed_by_new_input),
+            [],
+        )
+
     def test_tool_budget_executes_only_the_allowed_calls_and_pairs_the_rest(self):
         _execution_order.clear()
         executor = ToolExecutorNode(
@@ -469,6 +532,79 @@ class TestToolExecutorGraphIntegration(unittest.TestCase):
 
 
 class TestToolExecutorAsyncGraphIntegration(unittest.IsolatedAsyncioTestCase):
+    @patch("cyberclaw.core.agent.audit_logger.log_event", return_value=True)
+    @patch("cyberclaw.core.agent.provider.get_provider")
+    async def test_cancelled_checkpoint_can_be_backfilled_idempotently(
+        self,
+        mock_get_provider,
+        _mock_log_event,
+    ):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from cyberclaw.core.agent import (
+            backfill_interrupted_tool_calls,
+            create_agent_app,
+        )
+
+        bound_model = Mock()
+        bound_model.invoke.side_effect = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("echo_tool", {"value": "pending"}, "pending-call")
+                ],
+            ),
+            AIMessage(content="recovered next turn"),
+        ]
+        model = Mock()
+        model.bind_tools.return_value = bound_model
+        mock_get_provider.return_value = model
+
+        app = create_agent_app(
+            tools=[echo_tool],
+            checkpointer=MemorySaver(),
+        )
+        config = _config("interrupted-checkpoint")
+        stream = app.astream(
+            {
+                "messages": [HumanMessage(content="start")],
+                "summary": "",
+            },
+            config=config,
+            stream_mode="updates",
+        )
+
+        first_event = await anext(stream)
+        self.assertIn("agent", first_event)
+        await stream.aclose()
+
+        repaired = await backfill_interrupted_tool_calls(app, config)
+        repaired_again = await backfill_interrupted_tool_calls(app, config)
+        snapshot = await app.aget_state(config)
+        tool_messages = [
+            message
+            for message in snapshot.values["messages"]
+            if isinstance(message, ToolMessage)
+        ]
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(repaired_again, 0)
+        self.assertEqual(len(tool_messages), 1)
+        self.assertEqual(tool_messages[0].tool_call_id, "pending-call")
+        self.assertEqual(
+            tool_messages[0].artifact["cyberclaw_tool_result"]["status"],
+            "interrupted",
+        )
+
+        resumed = await app.ainvoke(
+            {
+                "messages": [HumanMessage(content="new user turn")],
+                "summary": "",
+            },
+            config=config,
+        )
+        self.assertEqual(resumed["messages"][-1].content, "recovered next turn")
+
     @patch("cyberclaw.core.agent.audit_logger.log_event", return_value=True)
     @patch("cyberclaw.core.agent.provider.get_provider")
     async def test_astream_supports_the_sync_serial_executor_node(

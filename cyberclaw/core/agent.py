@@ -1,5 +1,6 @@
 import os
 from collections.abc import Sequence
+from typing import Any
 
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, START, END
@@ -14,8 +15,34 @@ from .config import MEMORY_DIR
 from .context import AgentState, trim_context_messages
 from .logger import audit_logger
 from .runtime import AgentRunLimits, count_current_turn_model_calls
-from .tools import ToolExecutorNode, ToolRegistry, ToolRisk, ToolSource
+from .tools import (
+    ToolExecutorNode,
+    ToolRegistry,
+    ToolRisk,
+    ToolSource,
+    build_interrupted_tool_messages,
+)
 from .tools import builtins as builtin_tools
+
+
+async def backfill_interrupted_tool_calls(
+    app: Any,
+    config: RunnableConfig,
+) -> int:
+    """Persist placeholders for terminal tool calls left pending by cancellation."""
+
+    snapshot = await app.aget_state(config)
+    messages = snapshot.values.get("messages", []) if snapshot.values else []
+    placeholders = build_interrupted_tool_messages(messages)
+    if not placeholders:
+        return 0
+
+    await app.aupdate_state(
+        config,
+        {"messages": placeholders},
+        as_node="tools",
+    )
+    return len(placeholders)
 
 
 def build_tool_registry(

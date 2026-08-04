@@ -35,6 +35,7 @@ class ToolResultStatus(str, Enum):
     EXECUTION_ERROR = "execution_error"
     TIMEOUT = "timeout"
     BUDGET_EXCEEDED = "budget_exceeded"
+    INTERRUPTED = "interrupted"
 
 
 ToolMessageContent = str | list[str | dict[str, Any]]

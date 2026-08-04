@@ -11,7 +11,10 @@ from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.styles import Style
 from prompt_toolkit.application import get_app
 
-from cyberclaw.core.agent import create_agent_app
+from cyberclaw.core.agent import (
+    backfill_interrupted_tool_calls,
+    create_agent_app,
+)
 from cyberclaw.core.config import DB_PATH, ensure_workspace
 from cyberclaw.core.environment import load_project_env
 from cyberclaw.core.heartbeat import pacemaker_loop
@@ -176,6 +179,25 @@ async def async_main():
                                         cprint(formatted_out + "\033[0m")
                                 else:
                                     spinner.is_tool_calling = False
+                    except asyncio.CancelledError:
+                        try:
+                            repaired_calls = await asyncio.wait_for(
+                                backfill_interrupted_tool_calls(app, config),
+                                timeout=2.0,
+                            )
+                        except Exception:
+                            repaired_calls = 0
+                            cprint(
+                                "  \033[33m[ ⚠️ 当前运行已取消，但未能确认"
+                                " Checkpoint 中的工具消息是否完整。 ]\033[0m"
+                            )
+                        if repaired_calls:
+                            cprint(
+                                "  \033[33m[ ⚠️ 当前运行已取消，"
+                                f"已为 {repaired_calls} 个未完成工具调用补写中断结果。 ]"
+                                "\033[0m"
+                            )
+                        raise
                     except Exception as exc:
                         cprint(f"  \033[31m[ ⚠️ 引擎异常 : {exc} ]\033[0m")
                     cprint()

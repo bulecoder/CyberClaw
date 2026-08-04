@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 from pydantic.v1 import ValidationError as ValidationErrorV1
@@ -17,6 +17,65 @@ from .registry import ToolRegistry
 
 class ToolProtocolError(RuntimeError):
     """Raised when the graph routes an invalid message sequence to tools."""
+
+
+def find_pending_tool_calls(
+    messages: Iterable[BaseMessage],
+) -> list[Mapping[str, Any]]:
+    """Find unanswered calls on the terminal assistant tool-call message."""
+
+    materialized = list(messages)
+    terminal_ai_index: int | None = None
+    for index in range(len(materialized) - 1, -1, -1):
+        message = materialized[index]
+        if isinstance(message, ToolMessage):
+            continue
+        if isinstance(message, AIMessage) and message.tool_calls:
+            terminal_ai_index = index
+        break
+
+    if terminal_ai_index is None:
+        return []
+
+    answered_ids = {
+        message.tool_call_id
+        for message in materialized[terminal_ai_index + 1:]
+        if isinstance(message, ToolMessage)
+    }
+    return [
+        call
+        for call in materialized[terminal_ai_index].tool_calls
+        if str(call.get("id", "")).strip() not in answered_ids
+    ]
+
+
+def build_interrupted_tool_messages(
+    messages: Iterable[BaseMessage],
+) -> list[ToolMessage]:
+    """Build protocol-valid placeholders for a cancelled Agent run."""
+
+    placeholders: list[ToolMessage] = []
+    for call in find_pending_tool_calls(messages):
+        call_id = str(call.get("id", "")).strip()
+        tool_name = str(call.get("name", "")).strip()
+        if not call_id or not tool_name:
+            raise ToolProtocolError(
+                "待恢复的工具调用必须同时包含 id 和 name"
+            )
+        placeholders.append(
+            ToolResult(
+                tool_call_id=call_id,
+                tool_name=tool_name,
+                status=ToolResultStatus.INTERRUPTED,
+                content=(
+                    "该工具调用因本次 Agent 运行被取消而未完成。"
+                    "如果仍需执行，请在新的用户任务中重新发起。"
+                ),
+                error_type="ToolExecutionInterrupted",
+                metadata={"reason": "run_cancelled"},
+            ).to_tool_message()
+        )
+    return placeholders
 
 
 def _normalize_content(value: Any) -> ToolMessageContent:
