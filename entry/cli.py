@@ -5,19 +5,15 @@ import logging
 from rich.console import Console
 from rich.panel import Panel
 from rich.status import Status
-from dotenv import set_key, load_dotenv, unset_key
-import sys
+from dotenv import set_key, unset_key
 
-from cyberclaw.core.provider import get_provider
+from cyberclaw.core.environment import (
+    ConfigurationError,
+    ENV_PATH,
+    load_project_env,
+)
+from cyberclaw.core.provider import OPENAI_COMPATIBLE_PROVIDERS, get_provider
 from langchain_core.messages import HumanMessage
-
-ENTRY_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(ENTRY_DIR) 
-
-os.chdir(PROJECT_ROOT)
-
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
 
 app = typer.Typer(help="CyberClaw - 极客专属的赛博智能终端")
 console = Console()
@@ -32,10 +28,14 @@ cyber_style = questionary.Style([
     ('instruction', 'fg:#808080 dim'),  
 ])
 
-ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
-
 @app.command("config")
 def config_wizard():
+    try:
+        load_project_env()
+    except ConfigurationError as exc:
+        console.print(f"[bold red]无法读取现有配置：[/bold red]{exc}")
+        return
+
     console.clear()
     console.print(Panel(
         "👾 Welcome to [bold #8d52ff]CyberClaw[/bold #8d52ff]...\n\n☁️[dim] 请完成模型配置，我们将把密钥安全固化在本地。[/dim]", 
@@ -103,20 +103,21 @@ def config_wizard():
         console.print("[dim #8d52ff]✦   录入中断，CyberClaw 配置已取消。[/dim #8d52ff]")
         return
 
+    effective_base_url = base_url.strip()
+    if provider == "other" and not effective_base_url:
+        effective_base_url = os.getenv("OPENAI_API_BASE", "").strip()
+
     console.print("\n[dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]")
 
     with Status(f"[bold #8d52ff]正在连接 {provider.upper()} 引擎并发送探测包...[/bold #8d52ff]", spinner="dots", spinner_style="#00ffff"):
         try:
-            if env_key and api_key:
-                os.environ[env_key] = api_key   # 把aip_key和base_url写入到 os.environ中，但是没有写到.env中，只是在当前配置进程中临时设置变量
-            if base_url:
-                if is_openai_compatible:
-                    os.environ["OPENAI_API_BASE"] = base_url
-                else:
-                    os.environ[f"{provider.upper()}_BASE_URL"] = base_url
-
-            llm = get_provider(provider_name=provider, model_name=model_name)   # 这里没有把api_key和base_url作为函数参数传进去，所以get_provider只能从 os.environ 读取
-            response = llm.invoke([HumanMessage(content="回复我'收到'。")])     # 发送探测请求,但是代码没有验证是否真的回到了“收到”，只是验证了调用没有报错
+            llm = get_provider(
+                provider_name=provider,
+                model_name=model_name,
+                api_key=api_key or None,
+                base_url=effective_base_url or None,
+            )
+            llm.invoke([HumanMessage(content="回复我'收到'。")])
 
             console.print(" [bold #00ffff][ 配置成功!][/bold #00ffff]")
             
@@ -126,26 +127,31 @@ def config_wizard():
             return
 
 
-    if not os.path.exists(ENV_PATH):
-        open(ENV_PATH, 'w').close()
+    ENV_PATH.touch(exist_ok=True)
 
     logging.getLogger("dotenv.main").setLevel(logging.ERROR)
 
-    unset_key(ENV_PATH, "OPENAI_API_BASE")      # 先删除旧 base url
-    unset_key(ENV_PATH, "ANTHROPIC_BASE_URL")
-    unset_key(ENV_PATH, "OLLAMA_BASE_URL")
+    env_path = str(ENV_PATH)
+    unset_key(env_path, "OPENAI_API_BASE", encoding="utf-8-sig")
+    unset_key(env_path, "ANTHROPIC_BASE_URL", encoding="utf-8-sig")
+    unset_key(env_path, "OLLAMA_BASE_URL", encoding="utf-8-sig")
 
     if env_key and api_key:
-        set_key(ENV_PATH, env_key, api_key)     # 前面探测请求成功以后才写入 .env
-        
-    if base_url:
+        set_key(env_path, env_key, api_key, encoding="utf-8-sig")
+
+    if effective_base_url:
         if is_openai_compatible:
-            set_key(ENV_PATH, "OPENAI_API_BASE", base_url)
+            set_key(env_path, "OPENAI_API_BASE", effective_base_url, encoding="utf-8-sig")
         else:
-            set_key(ENV_PATH, f"{provider.upper()}_BASE_URL", base_url)
-    
-    set_key(ENV_PATH, "DEFAULT_PROVIDER", provider)
-    set_key(ENV_PATH, "DEFAULT_MODEL", model_name)
+            set_key(
+                env_path,
+                f"{provider.upper()}_BASE_URL",
+                effective_base_url,
+                encoding="utf-8-sig",
+            )
+
+    set_key(env_path, "DEFAULT_PROVIDER", provider, encoding="utf-8-sig")
+    set_key(env_path, "DEFAULT_MODEL", model_name.strip(), encoding="utf-8-sig")
 
     console.print(Panel(
         f"配置已保存至 [#8d52ff]{ENV_PATH}[/#8d52ff]\n"
@@ -154,10 +160,10 @@ def config_wizard():
         border_style="#00ffff"
     ))
 
-def _show_boot_error():
+def _show_boot_error(details: str = "未检测到完整的 Provider、模型或 API 配置。"):
     console.print(Panel(
         "[bold #00ffff]CyberClaw未完成配置![/bold #00ffff]\n\n"
-        "[#8d52ff]检测到 API Key、模型或Baseurl。请重新执行以下命令完成配置：[/#8d52ff]\n"  # 这里应该是未检测到 API Key、模型或相关配置
+        f"[#8d52ff]{details}请检查配置或重新执行：[/#8d52ff]\n"
         "[bold #00ffff]cyberclaw config[/bold #00ffff]",
         title="[bold #8d52ff]⚠️ Boot Sequence Failed[/bold #8d52ff]",
         border_style="#8d52ff"
@@ -166,24 +172,31 @@ def _show_boot_error():
 
 @app.command("run")
 def run_agent():
-    load_dotenv(ENV_PATH)   # 加载项目根目录 .env
-    provider = os.getenv("DEFAULT_PROVIDER")    # 读取provider和model
-    model = os.getenv("DEFAULT_MODEL")
+    try:
+        load_project_env()
+    except ConfigurationError as exc:
+        _show_boot_error(f"{exc}\n")
+        raise typer.Exit(code=1)
+
+    provider = os.getenv("DEFAULT_PROVIDER", "").strip().lower()
+    model = os.getenv("DEFAULT_MODEL", "").strip()
     if not provider or not model:
         _show_boot_error()
-        raise typer.Exit()
+        raise typer.Exit(code=1)
     if provider != "ollama":
-        if provider in ["openai", "aliyun", "z.ai", "tencent", "other"]: 
-            if not os.getenv("OPENAI_API_KEY"): # 这里只检查配置是否存在，不会重新验证key是否有效
+        if provider in OPENAI_COMPATIBLE_PROVIDERS:
+            if not os.getenv("OPENAI_API_KEY"):
                 _show_boot_error()
-                raise typer.Exit()
-                
+                raise typer.Exit(code=1)
+            if provider == "other" and not os.getenv("OPENAI_API_BASE"):
+                _show_boot_error("other Provider 必须配置 OPENAI_API_BASE。\n")
+                raise typer.Exit(code=1)
         elif provider == "anthropic":
             if not os.getenv("ANTHROPIC_API_KEY"):
                 _show_boot_error()
-                raise typer.Exit()
-        
-    import entry.main as cyberclaw_main     # 延迟导入正式入口，配置不完整时，正式 Agent 不会启动
+                raise typer.Exit(code=1)
+
+    import entry.main as cyberclaw_main
     cyberclaw_main.main()
 
 @app.command("monitor")

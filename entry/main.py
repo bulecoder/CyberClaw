@@ -12,7 +12,8 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.application import get_app
 
 from cyberclaw.core.agent import create_agent_app
-from cyberclaw.core.config import DB_PATH
+from cyberclaw.core.config import DB_PATH, ensure_workspace
+from cyberclaw.core.environment import load_project_env
 from cyberclaw.core.heartbeat import pacemaker_loop
 from cyberclaw.core.logger import audit_logger
 from cyberclaw.core.runtime import STOP_TASK, shutdown_task_queue
@@ -89,11 +90,7 @@ def cprint(text="", end="\n"):
 
 async def async_main():
     print_banner()
-
-    from dotenv import load_dotenv
-    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
-    load_dotenv(env_path)
-
+    ensure_workspace()
     current_provider = os.getenv("DEFAULT_PROVIDER", "aliyun")
     current_model = os.getenv("DEFAULT_MODEL", "glm-5")
     task_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=100)
@@ -242,6 +239,7 @@ async def async_main():
 
 def main():
     try:
+        load_project_env()
         asyncio.run(async_main())
     finally:
         if not audit_logger.close():

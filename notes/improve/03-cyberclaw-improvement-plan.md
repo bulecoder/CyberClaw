@@ -386,11 +386,13 @@ tool_call_id → 一次工具调用
 
 当前采用明确的“启动快照”语义：运行中 LangGraph 的 `ToolNode` 和 `bind_tools()` 保持原工具集合，刷新后需要重启或重建 Agent 图才能绑定新快照，不再宣称自动热更新。
 
-### P1-8 Provider 缺少统一恢复与用量层 `[CCL][LCC][CC]`
+### P1-8 Provider 缺少统一恢复与用量层 `[CCL][LCC][CC]`（配置边界第一轮已完成）
 
 位置：`cyberclaw/core/provider.py`
 
 当前缺少分类重试、fallback、usage/cost、模型能力验证和清晰可选依赖。`langchain_anthropic`、`langchain_community` 的导入与 requirements 也不一致。
+
+已完成的第一轮：Provider 名称与模型名规范化；兼容端点执行 URL 校验；`other` 明确要求 Base URL；显式参数优先于环境变量；学校 OpenAI-compatible 地址加入回归测试；缺少 Anthropic/Ollama 适配包时返回明确配置错误，不再暴露底层 `ModuleNotFoundError`。
 
 改进为 Model Gateway：
 
@@ -403,11 +405,13 @@ tool_call_id → 一次工具调用
 - prompt-too-long 通知 Context Manager；
 - secrets 不进入日志。
 
-### P1-9 配置存在导入副作用 `[CCL]`
+### P1-9 配置存在导入副作用 `[CCL]`（已完成）
 
 位置：`config.py`、`provider.py`、`logger.py`
 
-导入模块时会 `load_dotenv()`、创建目录、打印消息或启动线程，使测试、作为库导入和多实例配置困难。应建立显式 `Settings.load()` 与 `Runtime.start()/close()`，并将用户数据目录与包源码目录分开。
+原实现导入模块时会隐式 `load_dotenv()`、创建目录、打印消息或启动线程，使测试、作为库导入和多实例配置困难。
+
+已完成：`.env` 只通过显式路径和 UTF-8 编码加载；无效编码转换为可操作的配置错误；`config.py` 导入不再创建目录或打印；工作区由应用启动时显式初始化；Provider 和 Logger 导入均无运行时副作用；CLI 不再修改进程当前目录。现有环境变量名称、学校 Base URL、模型和 API Key 契约保持不变。
 
 ### P1-10 工具结果和错误没有统一契约 `[CCL][CC]`
 

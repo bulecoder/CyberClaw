@@ -210,11 +210,11 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 ```
 
 **配置说明：**
-- `DEFAULT_PROVIDER`: 模型提供商 (`openai`, `anthropic`, `aliyun`, `tencent`, `z.ai`, `ollama`)
+- `DEFAULT_PROVIDER`: 模型提供商 (`openai`, `anthropic`, `aliyun`, `tencent`, `z.ai`, `ollama`, `other`)
 - `DEFAULT_MODEL`: 模型名称 (如 `gpt-4o-mini`, `glm-5`, `qwen-max`)
 - `OPENAI_API_KEY`: OpenAI 或兼容接口的 API Key
 - `ANTHROPIC_API_KEY`: Anthropic 的 API Key
-- `OPENAI_API_BASE`: 兼容接口的 Base URL（阿里云、腾讯云等）
+- `OPENAI_API_BASE`: 兼容接口的完整 `http://` 或 `https://` 地址；`DEFAULT_PROVIDER=other` 时必填
 - `OLLAMA_BASE_URL`: Ollama 本地服务地址（默认 `http://localhost:11434`）
 - `CYBERCLAW_ENABLE_SHELL`: 是否显式启用受限程序执行（默认关闭）
 - `CYBERCLAW_SHELL_ALLOWED_COMMANDS`: 允许启动的程序名称白名单，使用英文逗号分隔
@@ -222,6 +222,8 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 > ⚠️ **执行边界**：即使显式启用，该能力也只是受限执行器，不是操作系统级沙盒。只应加入你信任的程序；当前 `.env`、Provider、模型和 API Key 配置不需要为此修改。
 
 > 💡 **工作区配置**：工作区路径已在代码中初始化，默认为项目根目录的 `workspace` 文件夹，无需在 `.env` 中配置。仅当需要自定义工作区位置时，才设置 `CYBERCLAW_WORKSPACE` 环境变量。
+
+> 💡 **Windows 编码**：`.env` 必须保存为 UTF-8（支持 UTF-8 BOM）。通常不需要手动设置 `PYTHONUTF8`；如果设置，该变量只能是 `0` 或 `1`，`1t` 等值会使 Python 在 CyberClaw 启动前直接报错。
 
 > 💡 提示：配置完成后，可运行 `cyberclaw run` 聊天测试连接是否正常。
 
@@ -848,11 +850,11 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 ```
 
 **Configuration reference:**
-- `DEFAULT_PROVIDER`: model provider (`openai`, `anthropic`, `aliyun`, `tencent`, `z.ai`, `ollama`)
+- `DEFAULT_PROVIDER`: model provider (`openai`, `anthropic`, `aliyun`, `tencent`, `z.ai`, `ollama`, `other`)
 - `DEFAULT_MODEL`: model name, such as `gpt-4o-mini`, `glm-5`, or `qwen-max`
 - `OPENAI_API_KEY`: API key for OpenAI or compatible APIs
 - `ANTHROPIC_API_KEY`: Anthropic API key
-- `OPENAI_API_BASE`: Base URL for compatible APIs such as Alibaba Cloud or Tencent Cloud
+- `OPENAI_API_BASE`: complete `http://` or `https://` URL for a compatible endpoint; required when `DEFAULT_PROVIDER=other`
 - `OLLAMA_BASE_URL`: local Ollama service URL, defaulting to `http://localhost:11434`
 - `CYBERCLAW_ENABLE_SHELL`: explicitly enable restricted program execution; disabled by default
 - `CYBERCLAW_SHELL_ALLOWED_COMMANDS`: comma-separated allowlist of executable names
@@ -860,6 +862,8 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 > ⚠️ **Execution boundary**: even when enabled, this is a restricted executor rather than an OS-level sandbox. Only allow programs you trust. Existing `.env` provider, model, and API-key settings do not need to change.
 
 > 💡 **Workspace configuration**: the workspace path is initialized in code and defaults to the `workspace` folder in the project root. You do not need to configure it in `.env`. Set the `CYBERCLAW_WORKSPACE` environment variable only when you need a custom workspace path.
+
+> 💡 **Windows encoding**: save `.env` as UTF-8 (UTF-8 BOM is supported). You normally do not need to set `PYTHONUTF8`; if you do, its value must be `0` or `1`. Values such as `1t` make Python fail before CyberClaw starts.
 
 > 💡 Tip: after configuration, run `cyberclaw run` to test whether chat connectivity works.
 
