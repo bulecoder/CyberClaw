@@ -3,8 +3,6 @@ import time
 import uuid
 import random
 from typing import List, Optional
-from dotenv import load_dotenv
-
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from langchain_core.messages import HumanMessage
@@ -15,6 +13,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from cyberclaw.core.provider import get_provider
 from cyberclaw.core.context import AgentState
+from cyberclaw.core.environment import load_project_env
 
 
 SCENARIOS = [
@@ -167,8 +166,7 @@ def create_mock_tools() -> tuple[List[StructuredTool], List[StructuredTool]]:
 
 # 2. Agent 组装器 
 def build_test_agent(tools: List[StructuredTool], is_dual_stage: bool):
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    load_dotenv(env_path)
+    load_project_env()
     current_provider = os.getenv("DEFAULT_PROVIDER", "aliyun")
     current_model = os.getenv("DEFAULT_MODEL", "glm-5")
 

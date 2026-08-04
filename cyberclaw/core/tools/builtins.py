@@ -118,9 +118,9 @@ def save_user_profile(new_content: str) -> str:
     """
     更新用户的全局显性记忆档案。
     当你发现用户的偏好发生改变，或者有新的重要事实需要记录时：
-    1.请先调用 read_user_profile 获取当前的完整档案。
-    2.在你的上下文中，将新信息融入档案，并删去冲突或过时的旧信息。
-    3.将修改后的一整篇完整 Markdown 文本作为 new_content 参数传入此工具。
+    1. 当前画像已经由 Agent 注入上下文，请先阅读其中的完整内容。
+    2. 将新信息融入画像，并删去冲突或过时的旧信息。
+    3. 将修改后的完整 Markdown 文本作为 new_content 参数传入此工具。
     注意：此操作将完全覆盖旧文件！请确保传入的是完整的最新档案。
     """
     os.makedirs(MEMORY_DIR, exist_ok=True)

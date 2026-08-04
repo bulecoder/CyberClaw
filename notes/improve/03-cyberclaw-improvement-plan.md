@@ -446,45 +446,43 @@ context.compacted / memory.updated
 run.completed / run.failed / run.cancelled
 ```
 
-### P2-3 Monitor 与 Logger 事件漂移 `[CCL]`
+### P2-3 Monitor 与 Logger 事件漂移 `[CCL]`（第一轮已完成）
 
-Monitor 不显示 `ai_message`，却保留从未产生的 `system_action` 分支；默认日志文件又固定到 `local_geek_master`。应让 Monitor 消费共享事件 schema，并支持按 session/run/filter 选择。
+已完成：Monitor 展示 Logger 实际产生的 4 类有限元数据事件，删除未产生的 `system_action` 分支，并与正文不落盘契约对齐。剩余问题是日志文件仍固定到 `local_geek_master`；待多会话实现后再支持按 session/run/filter 选择。
 
-### P2-4 测试偏正常路径 `[CCL][CC]`
+### P2-4 测试偏正常路径 `[CCL][CC]`（安全与可靠性第一轮已完成）
 
-现有测试缺少：
+已补充：
 
-- office 兄弟前缀、symlink/Junction 越界；
-- Shell 环境变量泄露和间接绕过；
-- 完整 Agent 多轮、中断、压缩和恢复协议；
-- shutdown 队列竞态；
-- logger 幂等关闭和脱敏；
-- Skill 版本刷新；
-- Provider 重试/fallback；
-- 真实 MCP 生命周期；
-- README 命令和文件存在性检查。
+- office 兄弟前缀、绝对路径、symlink 越界和原子写入；
+- Shell 环境变量泄露、解释器和命令拼接绕过；
+- shutdown 队列竞态、超时和消费者异常；
+- Logger 幂等关闭、脱敏、队列满和写入失败；
+- Skill 版本刷新、快照失效、冲突和 help→run 会话隔离；
+- Provider 配置优先级、URL 与学校兼容端点；
+- README 关键能力边界和核心文件存在性。
 
-建议先建立 invariants 清单，再写 deterministic tests、安全回归、model eval 和 benchmark 四套证据。
+仍缺少完整 Agent 多轮/中断/压缩/恢复协议、Provider retry/fallback、真实 MCP 生命周期、跨平台 Junction 以及独立 model eval/benchmark；这些随对应架构阶段补充。
 
 ## 5. 文档描述与实际实现不一致
 
-以下问题必须在实现对应能力前降低或修正文档声明。
+下表记录发现的问题及当前处理状态。
 
 | 文档描述 | 实际实现 | 处理建议 |
 |---|---|---|
-| 已集成 MCP 服务/可调用 MCP | 仓库没有 MCP client/runtime、连接配置或协议依赖 | 暂改为“规划中”；真实实现后再写支持的 transport 和边界 |
-| 严格安全沙盒、零信任、阻止未授权操作 | 已实现真实路径边界和默认关闭的程序白名单，但仍没有 OS 隔离、网络限制和逐次审批 | 使用“受限工作区与防误操作规则”，不宣称 OS 隔离 |
+| 已集成 MCP 服务/可调用 MCP | 仓库没有 MCP client/runtime、连接配置或协议依赖 | 已明确标为未来扩展方向，不再声称已集成 |
+| 严格安全沙盒、零信任、阻止未授权操作 | 已实现真实路径边界和默认关闭的程序白名单，但仍没有 OS 隔离、网络限制和逐次审批 | 已统一使用“受限工作区与防误操作规则”，不宣称 OS 隔离 |
 | 五类完整日志事件 | 已统一为实际产生的 4 类有限元数据事件，并删除 Monitor 中从未产生的 `system_action` 分支 | 已修正文档与展示；后续 Trace 使用独立版本化 schema |
 | 记录全部行为/完整决策轨迹 | `llm_input` 仅有消息数量，且正文默认不落盘，缺少用量和 span | 已改称有限事件日志；完成 trace 后再升级声明 |
 | Heartbeat 独立后台进程，主程序退出后仍工作 | 实际是在 `entry/main.py` 内创建的协程，没有独立服务入口 | 已改为“随 CLI 生命周期运行的后台协程” |
 | 英文 README 每秒检查任务 | `main.py` 实际传入约 10 秒间隔 | 已统一为 10 秒 |
-| `read_user_profile` 后再保存 | 没有这个工具，只有 Agent 节点直接读取 profile 文件 | 增加明确只读能力或删除错误说明 |
+| `read_user_profile` 后再保存 | 没有这个工具，只有 Agent 节点直接读取 profile 文件 | 已删除不存在的工具要求，说明改为使用已注入上下文的完整画像 |
 | Skill help 返回完整说明书 | 已改为 3000 字符分页，并要求 executable Skill 在当前会话读完全部页面 | 已修复，不再声称单次返回全文 |
 | Skill 自动热更新 | 已实现版本化启动快照和正确缓存刷新；运行图需重启或重建 | 已修复描述，不宣称自动热更新 |
 | 兼容 Claude Code/OpenClaw Skills | 当前只支持本项目 Markdown Skill 格式 | 已修复描述；其他生态需要适配器和兼容测试 |
-| SQLite 保存完整短期记忆/完整历史 | Agent 会裁剪当前消息视图，应用也没有完整 transcript 浏览和恢复语义 | 区分 checkpoint、完整事件日志和模型 Context View |
-| 双水位记忆 | 实际更接近“画像 + 对话摘要”两类记忆，不是两个数值水位 | 使用准确术语“用户画像与会话摘要” |
-| 持续学习 | 实际由模型决定整文件覆盖用户画像，没有提取、冲突、整合和遗忘机制 | 改称“显式用户画像保存”；完成 Memory Pipeline 后再升级 |
+| SQLite 保存完整短期记忆/完整历史 | Agent 会裁剪当前消息视图，应用也没有完整 transcript 浏览和恢复语义 | 已改称 LangGraph checkpoint，并明确不提供完整 transcript |
+| 双水位记忆 | 实际更接近“画像 + 对话摘要”两类记忆，不是两个数值水位 | 已统一为“用户画像与会话摘要” |
+| 持续学习 | 实际由模型决定整文件覆盖用户画像，没有提取、冲突、整合和遗忘机制 | 已改称“显式用户画像保存” |
 | 测试文档引用 `tests/test_context.py` | README 已改为实际文件名 `test_context_advanced.py` | 已修复 |
 | 示例从 `test_two_phase_skills.py` 导入 `run_tests` | README 已删除无效命令，并将该文件标为实时模型历史实验 | 已修复 |
 | 存在 `tests/logs/test_two_phase_skills.md` | README 已删除不存在的报告引用和固定实验数字 | 已修复 |
@@ -817,17 +815,17 @@ benchmarks/
 | 有界 run 预算 | ✓ |  | 当前缺少应用级预算 |
 | Tool Registry/能力集合 | 实例级工具作用域 | 动态统一工具池 | ToolNode 创建时固定 |
 | Policy/Approval | 通过不给工具限制能力 | 完整执行前管线 | 目前主要靠 Prompt |
-| Hook/Event | CLI callbacks | 生命周期 Hook | Logger/Monitor 事件漂移 |
+| Hook/Event | CLI callbacks | 生命周期 Hook | 4 类有限事件已对齐，尚未形成版本化 Trace |
 | 结构化 ToolResult | 参数错误分类 | 统一分发与通知 | 当前主要返回字符串 |
-| 安全路径 | Session 纵深防御 |  | office `startswith()` 缺陷 |
+| 安全路径 | Session 纵深防御 |  | 已改为 canonical path + `relative_to()` 边界 |
 | 安全编辑/Diff | 唯一匹配与 unified diff |  | 当前只有覆盖/追加 |
 | 分层 Context | 三级压缩、safe split | 结果外置、microcompact、reactive compact | 固定回合摘要 |
 | Memory Pipeline | 摘要降级 | 选择/提取/整合 | 画像整文件覆盖 |
 | 子 Agent | 上下文隔离、禁递归 | 受限工具和任务协作 | 当前未实现，暂缓 |
-| 异步任务 | 线程并行工具 | background + notification | heartbeat 队列有雏形但不可靠 |
-| Scheduler |  | producer/queue/consumer | JSON heartbeat 生命周期问题 |
-| Provider Recovery | retry/usage/cost | fallback/超限恢复 | 当前缺少统一层 |
-| MCP |  | 动态发现/命名空间（教学 mock） | 文档声称、实现缺失 |
+| 异步任务 | 线程并行工具 | background + notification | 有界单消费者队列与可靠 shutdown，尚无类型化通知 |
+| Scheduler |  | producer/queue/consumer | 生命周期已修正，JSON ack/retry 仍缺失 |
+| Provider Recovery | retry/usage/cost | fallback/超限恢复 | 配置校验已完成，恢复与用量层仍缺失 |
+| MCP |  | 动态发现/命名空间（教学 mock） | 未实现，README 已明确标为未来方向 |
 | Session/CLI | 安全保存与恢复 | 类型化任务通知 | 固定 `local_geek_master` |
 | Tracing/Eval | 跨模块不变量测试 | Hook/集成数据流 | 日志字段、测试和指标不足 |
 
