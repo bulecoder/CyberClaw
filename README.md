@@ -55,7 +55,7 @@ CyberClaw 当前只原生支持本项目定义的 Markdown Skill 格式。OpenCl
 | **🧠 双水位记忆** | 长期画像 + 短期摘要，持续学习用户偏好 | 越用越懂你，避免重复询问 |
 | **🔍 有限事件审计** | 4 类元数据事件，敏感字段与正文默认不落盘 | 在降低泄密风险的同时辅助运行诊断 |
 | **🛡️ 受限工作区执行** | 文件路径边界 + 默认关闭的程序白名单 | 降低误操作和凭据泄露风险，不宣称 OS 级隔离 |
-| **⏰ 心跳任务引擎** | 后台独立进程，自动执行定时任务 | 解放双手，复杂任务自动化 |
+| **⏰ 心跳任务引擎** | 随 CLI 生命周期运行的后台协程 | 主程序运行期间串行触发定时任务 |
 | **🖥️ 跨平台支持** | Unix + Windows 路径处理与白名单程序适配 | 一套代码覆盖主要桌面平台 |
 
 ---
@@ -83,7 +83,7 @@ CyberClaw 当前只原生支持本项目定义的 Markdown Skill 格式。OpenCl
   - Rich 终端 UI，颜色/面板区分事件类型
 
 - **心跳任务系统**
-  - 后台独立进程，每秒检查任务队列
+  - 随 `cyberclaw run` 启动，每 10 秒检查一次任务文件
   - 支持 daily/weekly/monthly 循环任务
   - 任务持久化存储，重启不丢失
 
@@ -258,9 +258,9 @@ cyberclaw run
 
 ### ⏰ 心跳任务系统
 
-CyberClaw 内置心跳任务系统（Heartbeat），自动在后台执行定时任务：
+CyberClaw 内置心跳任务系统（Heartbeat），在聊天主程序运行期间触发定时任务：
 
-- **自动触发**：心跳进程每秒检查任务队列，到点自动触发
+- **自动触发**：后台协程每 10 秒检查一次任务文件，到点后送入 Agent 队列
 - **循环任务**：支持 daily/weekly/monthly 循环模式
 - **任务持久化**：任务保存在 `workspace/tasks.json`，重启不丢失
 - **实时监控**：运行 `cyberclaw monitor` 可查看任务执行日志
@@ -274,7 +274,7 @@ CyberClaw 内置心跳任务系统（Heartbeat），自动在后台执行定时�
 # 心跳系统会在每天 8:00 自动触发提醒
 ```
 
-> 💡 提示：心跳任务在后台运行，即使不启动主程序也会执行（需单独运行心跳进程）。
+> 💡 提示：当前没有独立 Heartbeat 服务入口；只有运行 `cyberclaw run` 时才会检查并触发任务。
 
 ### 5️⃣ 监控终端
 
@@ -693,7 +693,7 @@ CyberClaw currently supports only its own Markdown Skill format. OpenClaw or Cla
 | **🧠 Dual-watermark memory** | Long-term profile + short-term summaries that continuously learn user preferences | Understands you better over time and avoids repeated questions |
 | **🔍 Limited event auditing** | Four metadata event types with sensitive fields and content excluded by default | Supports runtime diagnosis while reducing disclosure risk |
 | **🛡️ Restricted workspace execution** | File-path boundaries plus a disabled-by-default program allowlist | Reduces accidental actions and credential exposure without claiming OS isolation |
-| **⏰ Heartbeat task engine** | Independent background process for scheduled tasks | Automates complex and repetitive tasks |
+| **⏰ Heartbeat task engine** | Background coroutine bound to the CLI lifecycle | Serially triggers scheduled work while the main program is running |
 | **🖥️ Cross-platform support** | Unix and Windows path handling plus allowlisted program adaptation | One codebase covers major desktop platforms |
 
 ---
@@ -721,7 +721,7 @@ CyberClaw currently supports only its own Markdown Skill format. OpenClaw or Cla
   - Rich terminal UI with colors and panels for different event types
 
 - **Heartbeat task system**
-  - Independent background process checks the task queue every second
+  - Starts with `cyberclaw run` and checks the task file every 10 seconds
   - Supports daily, weekly, and monthly recurring tasks
   - Persistent task storage survives restarts
 
@@ -896,9 +896,9 @@ After startup, CyberClaw enters the interactive chat interface:
 
 ### ⏰ Heartbeat Task System
 
-CyberClaw includes a heartbeat task system that automatically executes scheduled tasks in the background:
+CyberClaw includes a heartbeat task system that triggers scheduled tasks while the chat process is running:
 
-- **Automatic triggering**: the heartbeat process checks the task queue every second and triggers tasks on time
+- **Automatic triggering**: a background coroutine checks the task file every 10 seconds and submits due work to the Agent queue
 - **Recurring tasks**: supports daily, weekly, and monthly recurrence
 - **Persistent tasks**: tasks are stored in `workspace/tasks.json` and survive restarts
 - **Real-time monitoring**: run `cyberclaw monitor` to view task execution logs
@@ -912,7 +912,7 @@ CyberClaw includes a heartbeat task system that automatically executes scheduled
 # The heartbeat system triggers the reminder at 8:00 every day
 ```
 
-> 💡 Tip: heartbeat tasks run in the background and can execute even when the main program is not running, as long as the heartbeat process is started separately.
+> 💡 Tip: there is currently no standalone Heartbeat service; tasks are checked and triggered only while `cyberclaw run` is active.
 
 ### 5️⃣ Monitoring Terminal
 

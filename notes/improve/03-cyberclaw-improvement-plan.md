@@ -323,7 +323,7 @@ tool_call_id → 一次工具调用
 
 当前画像全局共享，工具整文件覆盖；没有事实来源、版本、冲突、置信度、过期、删除和用户确认。改为结构化 Memory Store，并拆分 selection、candidate extraction、approval、consolidation。
 
-### P1-4 Heartbeat 不是独立可靠调度器 `[CCL][LCC]`
+### P1-4 Heartbeat 不是独立可靠调度器 `[CCL][LCC]`（生命周期边界已修正）
 
 位置：`cyberclaw/core/heartbeat.py`、`builtins.py`、`entry/main.py`
 
@@ -339,11 +339,13 @@ tool_call_id → 一次工具调用
 
 改进：用 SQLite Job Store 保存 `next_run_at/status/attempts/timezone`，调度器只生产类型化 `ScheduledRunRequested` 事件，Agent 成功处理后再 ack。
 
-### P1-5 异步退出存在竞态 `[CCL]`
+已完成的边界修正：Heartbeat 现在明确作为随 CLI 生命周期运行的生产者；退出时先取消并等待 Heartbeat，再停止消费者，README 不再声称它是独立后台进程。任务存储、ack、重试和类型化事件仍属于后续 Scheduler 改造，不在本轮扩展。
+
+### P1-5 异步退出存在竞态 `[CCL]`（已完成）
 
 位置：`entry/main.py`
 
-`/exit` 后 worker 可能先退出，而 `task_queue.join()` 仍等待未消费任务；heartbeat 也可能在关停过程中继续入队。取消任务后没有统一等待，`task_done()` 也需要放在 `finally` 中保证调用。
+原实现把 `/exit` 放入普通任务队列，消费者可能在 Heartbeat 停止前提前退出，使 `task_queue.join()` 永久等待；取消后的后台 Task 也没有被统一等待。
 
 改进顺序：
 
@@ -356,6 +358,8 @@ tool_call_id → 一次工具调用
 → 关闭 checkpoint/provider/logger
 ```
 
+已完成：每次 CLI 启动创建自己的有界队列；退出命令不再伪装成 Agent 输入；停止生产者后使用独立哨兵关闭单消费者；每个队列项都在 `finally` 中调用 `task_done()`；超时后取消消费者并平衡剩余队列计数；redraw、Heartbeat、Agent worker 和 Logger 都有明确的等待或关闭路径。
+
 ### P1-6 Logger 生命周期不完整 `[CCL]`（第一轮修复已完成）
 
 位置：`cyberclaw/core/logger.py`
@@ -364,7 +368,7 @@ tool_call_id → 一次工具调用
 
 已完成：Logger 改为实例化对象并惰性启动；队列有界且生产者不阻塞；`close()` 可安全重复调用；写入、丢弃和失败计数可查询；日志目录创建或单条写入失败不会终止 Agent。
 
-剩余边界：下一轮 Runtime 退出改造时，由主程序在固定关停顺序中显式调用 Logger `close()`；日志轮转仍与 P0-6 一并保留为后续按需能力。
+主程序现已在退出路径显式调用 Logger `close()`；日志轮转仍与 P0-6 一并保留为后续按需能力。
 
 ### P1-7 Skill 热更新与实际工具绑定不一致 `[CCL][LCC]`（第一轮修复已完成）
 
@@ -468,8 +472,8 @@ Monitor 不显示 `ai_message`，却保留从未产生的 `system_action` 分支
 | 严格安全沙盒、零信任、阻止未授权操作 | 已实现真实路径边界和默认关闭的程序白名单，但仍没有 OS 隔离、网络限制和逐次审批 | 使用“受限工作区与防误操作规则”，不宣称 OS 隔离 |
 | 五类完整日志事件 | 已统一为实际产生的 4 类有限元数据事件，并删除 Monitor 中从未产生的 `system_action` 分支 | 已修正文档与展示；后续 Trace 使用独立版本化 schema |
 | 记录全部行为/完整决策轨迹 | `llm_input` 仅有消息数量，且正文默认不落盘，缺少用量和 span | 已改称有限事件日志；完成 trace 后再升级声明 |
-| Heartbeat 独立后台进程，主程序退出后仍工作 | 实际是在 `entry/main.py` 内创建的协程，没有独立服务入口 | 改为“随 CLI 生命周期运行的后台协程”，或真正拆独立 scheduler |
-| 英文 README 每秒检查任务 | `main.py` 实际传入约 10 秒间隔 | 文档和默认配置统一 |
+| Heartbeat 独立后台进程，主程序退出后仍工作 | 实际是在 `entry/main.py` 内创建的协程，没有独立服务入口 | 已改为“随 CLI 生命周期运行的后台协程” |
+| 英文 README 每秒检查任务 | `main.py` 实际传入约 10 秒间隔 | 已统一为 10 秒 |
 | `read_user_profile` 后再保存 | 没有这个工具，只有 Agent 节点直接读取 profile 文件 | 增加明确只读能力或删除错误说明 |
 | Skill help 返回完整说明书 | 已改为 3000 字符分页，并要求 executable Skill 在当前会话读完全部页面 | 已修复，不再声称单次返回全文 |
 | Skill 自动热更新 | 已实现版本化启动快照和正确缓存刷新；运行图需重启或重建 | 已修复描述，不宣称自动热更新 |
