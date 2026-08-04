@@ -1,37 +1,78 @@
-from typing import List, Optional
+import os
+from collections.abc import Sequence
+
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
-from .context import AgentState, trim_context_messages
-from .provider import get_provider
-from .tools.builtins import BUILTIN_TOOLS
-from .logger import audit_logger
-from .config import MEMORY_DIR
-from .skill_loader import load_dynamic_skills
 from langchain_core.runnables import RunnableConfig
-import os
 from prompt_toolkit import print_formatted_text
 from prompt_toolkit.formatted_text import ANSI
+
+from . import provider, skill_loader
+from .config import MEMORY_DIR
+from .context import AgentState, trim_context_messages
+from .logger import audit_logger
+from .tools import ToolRegistry, ToolRisk, ToolSource
+from .tools import builtins as builtin_tools
+
+
+def build_tool_registry(
+    tools: Sequence[BaseTool] | None = None,
+    tool_registry: ToolRegistry | None = None,
+) -> ToolRegistry:
+    """Build an immutable tool capability snapshot for one Agent graph."""
+    if tools is not None and tool_registry is not None:
+        raise ValueError("tools 与 tool_registry 不能同时传入")
+
+    if tool_registry is not None:
+        return tool_registry.snapshot()
+
+    registry = ToolRegistry()
+    if tools is not None:
+        for tool in tools:
+            registry.register_tool(tool, source=ToolSource.CUSTOM)
+        return registry.freeze()
+
+    for tool in builtin_tools.BUILTIN_TOOLS:
+        profile = builtin_tools.BUILTIN_TOOL_PROFILES.get(tool.name, {})
+        registry.register_tool(
+            tool,
+            source=ToolSource.BUILTIN,
+            risk=ToolRisk(profile.get("risk", ToolRisk.MEDIUM)),
+            read_only=bool(profile.get("read_only", False)),
+            concurrent_safe=bool(profile.get("concurrent_safe", False)),
+            timeout_seconds=profile.get("timeout_seconds"),
+        )
+
+    dynamic_tools = skill_loader.load_dynamic_skills(
+        reserved_names=set(registry.names)
+    )
+    for tool in dynamic_tools:
+        registry.register_tool(
+            tool,
+            source=ToolSource.SKILL,
+            risk=ToolRisk.HIGH,
+        )
+    return registry.freeze()
+
 
 def create_agent_app(
     provider_name: str = "openai",
     model_name: str = "gpt-4o-mini",
-    tools: Optional[List[BaseTool]] = None,
+    tools: Sequence[BaseTool] | None = None,
+    tool_registry: ToolRegistry | None = None,
     checkpointer = None
 ):
-    if tools is None:
-        dynamic_tools = load_dynamic_skills(
-            reserved_names={tool.name for tool in BUILTIN_TOOLS}
-        )
-        actual_tools = BUILTIN_TOOLS + dynamic_tools
-    else:
-        actual_tools = tools    # 如果显示传入 tools，则会完全替代默认工具，并不是追加
-    
-    
+    registry = build_tool_registry(tools=tools, tool_registry=tool_registry)
+    actual_tools = list(registry.tools)
+
     tool_node = ToolNode(actual_tools)  # 创建执行器（工具交给 ToolNode）
 
-    llm = get_provider(provider_name=provider_name, model_name=model_name)
+    llm = provider.get_provider(
+        provider_name=provider_name,
+        model_name=model_name,
+    )
     llm_with_tools = llm.bind_tools(actual_tools)   # 把工具描述交给模型，bind_tools不会执行工具，而是把工具名称、描述和参数schema告诉模型
 
     def agent_node(state: AgentState, config: RunnableConfig) -> dict:

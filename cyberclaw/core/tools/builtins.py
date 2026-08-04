@@ -365,3 +365,34 @@ BUILTIN_TOOLS = [
     delete_scheduled_task,
     modify_scheduled_task
 ]
+
+
+# Metadata is deliberately conservative. Future policy code may deny or require
+# approval based on these fields, so unknown or state-changing tools must not be
+# labelled as read-only/concurrent-safe by default.
+BUILTIN_TOOL_PROFILES = {
+    "get_current_time": {
+        "risk": "low",
+        "read_only": True,
+        "concurrent_safe": True,
+    },
+    "calculator": {
+        "risk": "low",
+        "read_only": True,
+        "concurrent_safe": True,
+    },
+    "get_system_model_info": {
+        "risk": "low",
+        "read_only": True,
+        "concurrent_safe": True,
+    },
+    "list_office_files": {"risk": "low", "read_only": True},
+    "read_office_file": {"risk": "low", "read_only": True},
+    "list_scheduled_tasks": {"risk": "low", "read_only": True},
+    "save_user_profile": {"risk": "medium"},
+    "write_office_file": {"risk": "medium"},
+    "schedule_task": {"risk": "medium"},
+    "delete_scheduled_task": {"risk": "medium"},
+    "modify_scheduled_task": {"risk": "medium"},
+    "execute_office_shell": {"risk": "high"},
+}
