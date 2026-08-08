@@ -138,6 +138,24 @@ class TestAgentToolRegistryAssembly(unittest.TestCase):
         self.assertEqual(registry.get("first_tool").source, ToolSource.CUSTOM)
         mock_load_skills.assert_not_called()
 
+    @patch("cyberclaw.core.agent.skill_loader.load_dynamic_skills")
+    def test_additional_specs_join_the_same_immutable_registry(
+        self,
+        mock_load_skills,
+    ):
+        from cyberclaw.core.agent import build_tool_registry
+
+        mcp_spec = ToolSpec.from_tool(second_tool, source=ToolSource.MCP)
+        registry = build_tool_registry(
+            tools=[first_tool],
+            additional_tool_specs=[mcp_spec],
+        )
+
+        self.assertTrue(registry.frozen)
+        self.assertEqual(registry.names, frozenset({"first_tool", "second_tool"}))
+        self.assertEqual(registry.get("second_tool").source, ToolSource.MCP)
+        mock_load_skills.assert_not_called()
+
     def test_explicit_registry_is_copied_before_agent_use(self):
         from cyberclaw.core.agent import build_tool_registry
 

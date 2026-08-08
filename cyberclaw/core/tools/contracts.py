@@ -15,6 +15,7 @@ class ToolSource(str, Enum):
     BUILTIN = "builtin"
     SKILL = "skill"
     CUSTOM = "custom"
+    MCP = "mcp"
 
 
 class ToolRisk(str, Enum):

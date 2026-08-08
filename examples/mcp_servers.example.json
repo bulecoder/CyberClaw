@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "demo": {
+      "enabled": true,
+      "trusted": true,
+      "command": "python",
+      "args": ["examples/mcp_demo_server.py"],
+      "cwd": ".",
+      "timeout_seconds": 30
+    }
+  }
+}

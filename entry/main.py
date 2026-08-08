@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import random
+from contextlib import AsyncExitStack
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
@@ -19,6 +20,12 @@ from cyberclaw.core.config import DB_PATH, ensure_workspace
 from cyberclaw.core.environment import load_project_env
 from cyberclaw.core.heartbeat import pacemaker_loop
 from cyberclaw.core.logger import audit_logger
+from cyberclaw.core.mcp import (
+    MCPClientManager,
+    MCPConfigurationError,
+    MCPManagerError,
+    load_mcp_server_configs,
+)
 from cyberclaw.core.runtime import AgentRunLimits, STOP_TASK, shutdown_task_queue
 from cyberclaw.core.tools import ApprovalStore, ToolPolicyEngine, ToolRisk
 
@@ -105,7 +112,31 @@ async def async_main():
     )
     thread_id = "local_geek_master"
 
-    async with AsyncSqliteSaver.from_conn_string(DB_PATH) as memory:
+    try:
+        mcp_configs = load_mcp_server_configs()
+    except MCPConfigurationError as exc:
+        mcp_configs = ()
+        cprint(f"  \033[33m[ MCP 配置未加载：{exc} ]\033[0m")
+    mcp_manager = MCPClientManager(mcp_configs)
+    try:
+        mcp_specs = mcp_manager.start()
+    except MCPManagerError as exc:
+        mcp_specs = ()
+        mcp_manager.close()
+        cprint(f"  \033[33m[ MCP 管理器未启动：{exc} ]\033[0m")
+    for server_name, error_type in mcp_manager.errors.items():
+        cprint(
+            f"  \033[33m[ MCP server '{server_name}' 启动失败："
+            f"{error_type} ]\033[0m"
+        )
+    if mcp_specs:
+        cprint(f"  \033[36m[ 已加载 {len(mcp_specs)} 个 MCP 工具 ]\033[0m")
+
+    async with AsyncExitStack() as stack:
+        stack.push_async_callback(asyncio.to_thread, mcp_manager.close)
+        memory = await stack.enter_async_context(
+            AsyncSqliteSaver.from_conn_string(DB_PATH)
+        )
         app = create_agent_app(
             provider_name=current_provider,
             model_name=current_model,
@@ -113,6 +144,7 @@ async def async_main():
             run_limits=run_limits,
             tool_policy=tool_policy,
             approval_store=approval_store,
+            additional_tool_specs=mcp_specs,
         )
         config = {
             "configurable": {"thread_id": thread_id},

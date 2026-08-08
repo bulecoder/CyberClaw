@@ -29,6 +29,7 @@ from .tools import (
     ToolRegistry,
     ToolRisk,
     ToolSource,
+    ToolSpec,
     build_interrupted_tool_messages,
 )
 from .tools import builtins as builtin_tools
@@ -57,40 +58,41 @@ async def backfill_interrupted_tool_calls(
 def build_tool_registry(
     tools: Sequence[BaseTool] | None = None,
     tool_registry: ToolRegistry | None = None,
+    additional_tool_specs: Sequence[ToolSpec] = (),
 ) -> ToolRegistry:
     """Build an immutable tool capability snapshot for one Agent graph."""
     if tools is not None and tool_registry is not None:
         raise ValueError("tools 与 tool_registry 不能同时传入")
 
-    if tool_registry is not None:
-        return tool_registry.snapshot()
-
-    registry = ToolRegistry()
-    if tools is not None:
+    registry = ToolRegistry(
+        tool_registry.specs if tool_registry is not None else ()
+    )
+    if tool_registry is None and tools is not None:
         for tool in tools:
             registry.register_tool(tool, source=ToolSource.CUSTOM)
-        return registry.freeze()
+    elif tool_registry is None:
+        for tool in builtin_tools.BUILTIN_TOOLS:
+            profile = builtin_tools.BUILTIN_TOOL_PROFILES.get(tool.name, {})
+            registry.register_tool(
+                tool,
+                source=ToolSource.BUILTIN,
+                risk=ToolRisk(profile.get("risk", ToolRisk.MEDIUM)),
+                read_only=bool(profile.get("read_only", False)),
+                concurrent_safe=bool(profile.get("concurrent_safe", False)),
+                timeout_seconds=profile.get("timeout_seconds"),
+            )
 
-    for tool in builtin_tools.BUILTIN_TOOLS:
-        profile = builtin_tools.BUILTIN_TOOL_PROFILES.get(tool.name, {})
-        registry.register_tool(
-            tool,
-            source=ToolSource.BUILTIN,
-            risk=ToolRisk(profile.get("risk", ToolRisk.MEDIUM)),
-            read_only=bool(profile.get("read_only", False)),
-            concurrent_safe=bool(profile.get("concurrent_safe", False)),
-            timeout_seconds=profile.get("timeout_seconds"),
+        dynamic_tools = skill_loader.load_dynamic_skills(
+            reserved_names=set(registry.names)
         )
-
-    dynamic_tools = skill_loader.load_dynamic_skills(
-        reserved_names=set(registry.names)
-    )
-    for tool in dynamic_tools:
-        registry.register_tool(
-            tool,
-            source=ToolSource.SKILL,
-            risk=ToolRisk.HIGH,
-        )
+        for tool in dynamic_tools:
+            registry.register_tool(
+                tool,
+                source=ToolSource.SKILL,
+                risk=ToolRisk.HIGH,
+            )
+    for spec in additional_tool_specs:
+        registry.register(spec)
     return registry.freeze()
 
 
@@ -106,11 +108,16 @@ def create_agent_app(
     tool_policy: ToolPolicyEngine | None = None,
     approval_store: ApprovalStore | None = None,
     tool_hooks: Sequence[ToolLifecycleHook] | None = None,
+    additional_tool_specs: Sequence[ToolSpec] = (),
 ):
     limits = run_limits or AgentRunLimits.from_env()
     active_context_policy = context_policy or ContextPolicy.from_env()
     active_provider_policy = provider_policy or provider.ProviderRetryPolicy.from_env()
-    registry = build_tool_registry(tools=tools, tool_registry=tool_registry)
+    registry = build_tool_registry(
+        tools=tools,
+        tool_registry=tool_registry,
+        additional_tool_specs=additional_tool_specs,
+    )
     actual_tools = list(registry.tools)
     active_tool_hooks = (
         tuple(tool_hooks)
