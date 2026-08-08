@@ -92,8 +92,15 @@ CyberClaw 当前只原生支持本项目定义的 Markdown Skill 格式。OpenCl
 - **透明监控系统**
   - 4 类元数据事件：`llm_input`, `tool_call`, `tool_result`, `ai_message`
   - API Key、Token 等敏感字段自动脱敏，模型回答和文件正文仅记录长度
+  - 模型事件记录实际尝试次数；Provider 返回 usage 时记录输入、输出和总 Token 数
   - JSONL 日志格式，支持 `tail -f` 实时监控
   - Rich 终端 UI，颜色/面板区分事件类型
+
+- **统一 Provider 调用边界**
+  - 主 Agent 与上下文摘要共用同一套请求策略
+  - OpenAI-compatible 与 Anthropic 适配器关闭 SDK 内置重试，避免多层重试叠加
+  - 只对限流、超时、连接失败和服务端错误执行有限指数退避；鉴权和请求错误立即失败
+  - 对外只返回分类后的安全错误，不直接暴露 Provider 原始响应正文
 
 - **心跳任务系统**
   - 随 `cyberclaw run` 启动，每 10 秒检查一次任务文件
@@ -217,6 +224,10 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 # CYBERCLAW_MAX_TOOL_CALLS=50
 # CYBERCLAW_RECURSION_LIMIT=50
 
+# 可选：Provider 调用策略（以下为默认值，尝试次数包含首次请求）
+# CYBERCLAW_PROVIDER_MAX_ATTEMPTS=3
+# CYBERCLAW_PROVIDER_TIMEOUT_SECONDS=60
+
 # 可选：受限程序执行默认关闭；仅在你信任待运行程序时开启
 # CYBERCLAW_ENABLE_SHELL=true
 # CYBERCLAW_SHELL_ALLOWED_COMMANDS=python
@@ -233,6 +244,8 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 - `CYBERCLAW_MAX_TOOL_CALLS`: 每次用户任务最多处理的工具调用请求数（默认 `50`；失败请求也计数，超出部分只回填拒绝结果）
 - `CYBERCLAW_RECURSION_LIMIT`: LangGraph 单次运行递归上限（默认 `50`，至少为模型调用上限的两倍再加一）
 - `CYBERCLAW_CONTEXT_MAX_TOKENS`: 上下文窗口近似值（默认 `64000`），用于分层裁剪而非精确计费
+- `CYBERCLAW_PROVIDER_MAX_ATTEMPTS`: 每次模型调用的最大尝试次数（默认 `3`，包含首次请求）
+- `CYBERCLAW_PROVIDER_TIMEOUT_SECONDS`: OpenAI-compatible 与 Anthropic 单次请求超时秒数（默认 `60`）
 - `CYBERCLAW_ENABLE_SHELL`: 是否显式启用受限程序执行（默认关闭）
 - `CYBERCLAW_SHELL_ALLOWED_COMMANDS`: 允许启动的程序名称白名单，使用英文逗号分隔
 
@@ -243,6 +256,8 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 > 💡 **Windows 编码**：`.env` 必须保存为 UTF-8（支持 UTF-8 BOM）。通常不需要手动设置 `PYTHONUTF8`；如果设置，该变量只能是 `0` 或 `1`，`1t` 等值会使 Python 在 CyberClaw 启动前直接报错。
 
 > 💡 **可选 Provider**：当前基础依赖已覆盖 OpenAI-compatible 路径。使用 Anthropic 需额外安装 `langchain-anthropic`；使用现有 Ollama 适配器需额外安装 `langchain-community`。未安装时 CLI 会给出明确提示。
+
+> 💡 **调用与计量边界**：只有限流、超时、连接失败和服务端错误会自动重试。超时后的原请求可能已被远端接收，因此重试可能产生额外 Token；usage 仅在 Provider 返回时记录，项目不根据未知价格估算费用。当前 Ollama 适配器不保证应用上述请求超时参数。
 
 > 💡 提示：配置完成后，可运行 `cyberclaw run` 聊天测试连接是否正常。
 
@@ -781,8 +796,15 @@ CyberClaw currently supports only its own Markdown Skill format. OpenClaw or Cla
 - **Transparent monitoring system**
   - Four metadata event types: `llm_input`, `tool_call`, `tool_result`, `ai_message`
   - API keys and tokens are redacted; model replies and file bodies are represented only by their length
+  - Model events record actual attempt counts and, when supplied by the Provider, input/output/total token usage
   - JSONL log format with `tail -f` real-time monitoring
   - Rich terminal UI with colors and panels for different event types
+
+- **Unified Provider invocation boundary**
+  - Main Agent and context-summary calls share one request policy
+  - Built-in SDK retries are disabled for OpenAI-compatible and Anthropic adapters to avoid multiplied retry layers
+  - Bounded exponential backoff applies only to rate limits, timeouts, connection failures, and server errors; authentication and bad requests fail immediately
+  - Callers receive a classified safe error instead of the raw Provider response body
 
 - **Heartbeat task system**
   - Starts with `cyberclaw run` and checks the task file every 10 seconds
@@ -906,6 +928,10 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 # CYBERCLAW_MAX_TOOL_CALLS=50
 # CYBERCLAW_RECURSION_LIMIT=50
 
+# Optional: Provider invocation policy (defaults shown; attempts include the initial request)
+# CYBERCLAW_PROVIDER_MAX_ATTEMPTS=3
+# CYBERCLAW_PROVIDER_TIMEOUT_SECONDS=60
+
 # Optional: restricted program execution is disabled by default
 # CYBERCLAW_ENABLE_SHELL=true
 # CYBERCLAW_SHELL_ALLOWED_COMMANDS=python
@@ -922,6 +948,8 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 - `CYBERCLAW_MAX_TOOL_CALLS`: maximum tool requests processed per user task; defaults to `50`, failed requests count, and excess requests receive paired rejection results
 - `CYBERCLAW_RECURSION_LIMIT`: LangGraph recursion cap per run; defaults to `50` and must be at least twice the model-call limit plus one
 - `CYBERCLAW_CONTEXT_MAX_TOKENS`: approximate context-window size, defaulting to `64000`; used for layered trimming rather than exact billing
+- `CYBERCLAW_PROVIDER_MAX_ATTEMPTS`: maximum attempts per model call; defaults to `3` and includes the initial request
+- `CYBERCLAW_PROVIDER_TIMEOUT_SECONDS`: per-request timeout in seconds for OpenAI-compatible and Anthropic adapters; defaults to `60`
 - `CYBERCLAW_ENABLE_SHELL`: explicitly enable restricted program execution; disabled by default
 - `CYBERCLAW_SHELL_ALLOWED_COMMANDS`: comma-separated allowlist of executable names
 
@@ -932,6 +960,8 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 > 💡 **Windows encoding**: save `.env` as UTF-8 (UTF-8 BOM is supported). You normally do not need to set `PYTHONUTF8`; if you do, its value must be `0` or `1`. Values such as `1t` make Python fail before CyberClaw starts.
 
 > 💡 **Optional Providers**: the base dependencies cover the OpenAI-compatible path. Anthropic additionally requires `langchain-anthropic`; the current Ollama adapter requires `langchain-community`. The CLI reports a clear configuration error when either adapter is missing.
+
+> 💡 **Invocation and metering boundary**: only rate limits, timeouts, connection failures, and server errors are retried automatically. A timed-out request may already have reached the remote service, so retrying can consume additional tokens. Usage is recorded only when the Provider returns it, and the project does not estimate cost from unknown pricing. The current Ollama adapter does not guarantee this request-timeout setting.
 
 > 💡 Tip: after configuration, run `cyberclaw run` to test whether chat connectivity works.
 

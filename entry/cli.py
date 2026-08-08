@@ -13,7 +13,13 @@ from cyberclaw.core.environment import (
     load_project_env,
 )
 from cyberclaw.core.context import ContextPolicy, ContextPolicyError
-from cyberclaw.core.provider import OPENAI_COMPATIBLE_PROVIDERS, get_provider
+from cyberclaw.core.provider import (
+    OPENAI_COMPATIBLE_PROVIDERS,
+    ProviderConfigurationError,
+    ProviderRetryPolicy,
+    get_provider,
+    invoke_model,
+)
 from cyberclaw.core.runtime import AgentRunLimits, RuntimeLimitConfigError
 from langchain_core.messages import HumanMessage
 
@@ -113,13 +119,19 @@ def config_wizard():
 
     with Status(f"[bold #8d52ff]正在连接 {provider.upper()} 引擎并发送探测包...[/bold #8d52ff]", spinner="dots", spinner_style="#00ffff"):
         try:
+            retry_policy = ProviderRetryPolicy.from_env()
             llm = get_provider(
                 provider_name=provider,
                 model_name=model_name,
                 api_key=api_key or None,
                 base_url=effective_base_url or None,
+                retry_policy=retry_policy,
             )
-            llm.invoke([HumanMessage(content="回复我'收到'。")])
+            invoke_model(
+                llm,
+                [HumanMessage(content="回复我'收到'。")],
+                policy=retry_policy,
+            )
 
             console.print(" [bold #00ffff][ 配置成功!][/bold #00ffff]")
             
@@ -208,6 +220,12 @@ def run_agent():
         ContextPolicy.from_env()
     except ContextPolicyError as exc:
         _show_boot_error(f"上下文配置无效：{exc}\n")
+        raise typer.Exit(code=1)
+
+    try:
+        ProviderRetryPolicy.from_env()
+    except ProviderConfigurationError as exc:
+        _show_boot_error(f"Provider 运行配置无效：{exc}\n")
         raise typer.Exit(code=1)
 
     import entry.main as cyberclaw_main

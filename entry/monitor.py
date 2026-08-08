@@ -104,7 +104,16 @@ def render_event(line: str):
 
         elif event == "ai_message":
             content_chars = data.get("content_chars", 0)
-            console.print(f"{prefix}[ai_message]🤖 模型已返回 {content_chars} 字符（正文不写入审计日志）[/ai_message]")
+            attempts = data.get("provider_attempts", 1)
+            usage = data.get("usage")
+            phase = data.get("phase", "agent")
+            details = [f"{content_chars} 字符", f"{attempts} 次尝试"]
+            if isinstance(usage, dict):
+                details.append(f"{usage.get('total_tokens', 0)} tokens")
+            console.print(
+                f"{prefix}[ai_message]🤖 模型已返回（{phase}）："
+                f"{'，'.join(details)}（正文不写入审计日志）[/ai_message]"
+            )
             
     except: pass
 

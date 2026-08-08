@@ -98,9 +98,11 @@ def create_agent_app(
     checkpointer = None,
     run_limits: AgentRunLimits | None = None,
     context_policy: ContextPolicy | None = None,
+    provider_policy: provider.ProviderRetryPolicy | None = None,
 ):
     limits = run_limits or AgentRunLimits.from_env()
     active_context_policy = context_policy or ContextPolicy.from_env()
+    active_provider_policy = provider_policy or provider.ProviderRetryPolicy.from_env()
     registry = build_tool_registry(tools=tools, tool_registry=tool_registry)
     actual_tools = list(registry.tools)
 
@@ -112,6 +114,7 @@ def create_agent_app(
     llm = provider.get_provider(
         provider_name=provider_name,
         model_name=model_name,
+        retry_policy=active_provider_policy,
     )
     llm_with_tools = llm.bind_tools(actual_tools)   # 把工具描述交给模型，bind_tools不会执行工具，而是把工具名称、描述和参数schema告诉模型
 
@@ -196,8 +199,25 @@ def create_agent_app(
                 )
         
             # 这里可以用便宜模型
-            new_summary_response = llm.invoke([HumanMessage(content=summary_prompt)], config={"callbacks":[]})  # 这里使用的是llm而不是llm_with_tools，摘要调用没有绑定工具，不会进入工具循环
+            new_summary_response = provider.invoke_model(
+                llm,
+                [HumanMessage(content=summary_prompt)],
+                config={"callbacks": []},
+                policy=active_provider_policy,
+            )  # 摘要调用没有绑定工具，不会进入工具循环
             active_summary = new_summary_response.content
+
+            summary_usage = provider.extract_model_usage(new_summary_response)
+            audit_logger.log_event(
+                thread_id=thread_id,
+                event="ai_message",
+                phase="context_summary",
+                content_chars=len(str(new_summary_response.content)),
+                provider_attempts=provider.get_invocation_attempts(
+                    new_summary_response
+                ),
+                usage=summary_usage.as_dict() if summary_usage else None,
+            )
 
             # 更新摘要
             state_updates["summary"] = active_summary
@@ -259,9 +279,24 @@ def create_agent_app(
             snipped_tool_messages=context_plan.snipped_tool_messages,
         )
 
-        response = llm_with_tools.invoke(msgs_for_llm)  # 对话时调用的是绑定（bind）后的模型
+        response = provider.invoke_model(
+            llm_with_tools,
+            msgs_for_llm,
+            config=config,
+            policy=active_provider_policy,
+        )
 
         # 解析大模型的回答并记录到日志
+        usage = provider.extract_model_usage(response)
+        audit_logger.log_event(
+            thread_id=thread_id,
+            event="ai_message",
+            phase="agent",
+            content_chars=len(str(response.content)),
+            tool_call_count=len(response.tool_calls),
+            provider_attempts=provider.get_invocation_attempts(response),
+            usage=usage.as_dict() if usage else None,
+        )
         if response.tool_calls:
             for tool_call in response.tool_calls:
                 tool_spec = registry.get(tool_call["name"])
@@ -273,12 +308,6 @@ def create_agent_app(
                     source=(tool_spec.source.value if tool_spec else "unknown"),
                     risk=(tool_spec.risk.value if tool_spec else "unknown"),
                 )
-        elif response.content:
-            audit_logger.log_event(
-                thread_id=thread_id,
-                event="ai_message",
-                content_chars=len(str(response.content)),
-            )
 
         if "messages" not in state_updates:
             state_updates["messages"] = []
