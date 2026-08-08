@@ -11,6 +11,37 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 class TestAgent(unittest.TestCase):
 
+    @patch('cyberclaw.core.agent.audit_logger.log_event', return_value=True)
+    @patch('cyberclaw.core.provider.get_provider')
+    def test_context_overflow_stops_before_calling_model(
+        self,
+        mock_get_provider,
+        _mock_log_event,
+    ):
+        from cyberclaw.core.agent import create_agent_app
+        from cyberclaw.core.context import ContextPolicy
+
+        bound_model = Mock()
+        model = Mock()
+        model.bind_tools.return_value = bound_model
+        mock_get_provider.return_value = model
+        app = create_agent_app(
+            tools=[],
+            context_policy=ContextPolicy(
+                max_tokens=500,
+                tool_output_chars=120,
+                emergency_tool_output_chars=60,
+            ),
+        )
+
+        result = app.invoke({
+            "messages": [HumanMessage(content="x" * 5_000)],
+            "summary": "",
+        })
+
+        bound_model.invoke.assert_not_called()
+        self.assertIn("超过安全窗口", result["messages"][-1].content)
+
     def test_agent_state_initialization(self):
         """测试 AgentState 的初始化"""
         from cyberclaw.core.context import AgentState

@@ -12,7 +12,12 @@ from prompt_toolkit.formatted_text import ANSI
 
 from . import provider, skill_loader
 from .config import MEMORY_DIR
-from .context import AgentState, trim_context_messages
+from .context import (
+    AgentState,
+    ContextPolicy,
+    build_context_plan,
+    render_summary_input,
+)
 from .logger import audit_logger
 from .runtime import AgentRunLimits, count_current_turn_model_calls
 from .tools import (
@@ -92,8 +97,10 @@ def create_agent_app(
     tool_registry: ToolRegistry | None = None,
     checkpointer = None,
     run_limits: AgentRunLimits | None = None,
+    context_policy: ContextPolicy | None = None,
 ):
     limits = run_limits or AgentRunLimits.from_env()
+    active_context_policy = context_policy or ContextPolicy.from_env()
     registry = build_tool_registry(tools=tools, tool_registry=tool_registry)
     actual_tools = list(registry.tools)
 
@@ -153,13 +160,30 @@ def create_agent_app(
             }
 
         current_summary = state.get("summary", "")
-        final_msgs, discarded_msgs = trim_context_messages(raw_messages, trigger_turns=40, keep_turns=10)   # 上下文裁剪
+        context_plan = build_context_plan(
+            raw_messages,
+            active_context_policy,
+        )
+        final_msgs = list(context_plan.visible_messages)
+        discarded_msgs = list(context_plan.discarded_messages)
         state_updates = {}
+
+        if "context_overflow" in context_plan.actions:
+            return {
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "当前单个任务的上下文仍超过安全窗口，CyberClaw "
+                            "没有继续请求模型。请缩短本次输入或拆分任务后重试。"
+                        )
+                    )
+                ]
+            }
 
         if discarded_msgs:  # 如果发生了上下文压缩，将舍弃掉的旧对话提取摘要，融合到上下文摘要里面
             import sys
             print_formatted_text(ANSI("\033[K \033[38;5;141m ● 正在更新上下文记忆... \033[0m"))
-            discarded_text = "\n".join([f"{m.type}: {m.content}" for m in discarded_msgs if m.content])
+            discarded_text = render_summary_input(discarded_msgs)
         
             summary_prompt = (
                     f"你是一个负责维护 AI 工作台上下文的后台模块。\n\n"
@@ -229,7 +253,10 @@ def create_agent_app(
         audit_logger.log_event(
             thread_id=thread_id,
             event="llm_input",
-            message_count=len(msgs_for_llm)
+            message_count=len(msgs_for_llm),
+            estimated_context_tokens=context_plan.estimated_tokens_after,
+            context_actions=context_plan.actions,
+            snipped_tool_messages=context_plan.snipped_tool_messages,
         )
 
         response = llm_with_tools.invoke(msgs_for_llm)  # 对话时调用的是绑定（bind）后的模型

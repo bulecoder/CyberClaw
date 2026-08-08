@@ -68,8 +68,9 @@ CyberClaw 当前只原生支持本项目定义的 Markdown Skill 格式。OpenCl
 
 - **用户画像与会话摘要**
   - 用户画像 (`user_profile.md`)：由模型决定何时调用覆盖式工具保存显式偏好
-  - 会话摘要（SQLite checkpoint 中的 `summary`）：达到 40 个用户回合时压缩旧消息，保留最近 10 个回合
-  - 当前按回合数裁剪，不是基于 Token 的精确预算，也不提供完整 transcript 归档
+  - 会话摘要（SQLite checkpoint 中的 `summary`）：消息视图达到约 70% 窗口或累计 40 个用户回合时压缩旧消息，默认保留最近 10 个完整回合
+  - 约 50% 时先裁剪旧工具正文，约 90% 时按完整回合紧急收缩；单轮仍过大则停止模型请求
+  - Token 数是混合中英文字符近似值，不包含动态 System Prompt 和工具 Schema，也不提供完整 transcript 归档
 
 - **有界运行与中断恢复**
   - 每个新用户任务独立限制 Agent 主循环模型调用、工具请求数和 LangGraph 递归深度
@@ -231,6 +232,7 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 - `CYBERCLAW_MAX_MODEL_CALLS`: 每次用户任务中 Agent 主循环最多调用模型的次数（默认 `20`；上下文摘要等辅助调用不在此计数内）
 - `CYBERCLAW_MAX_TOOL_CALLS`: 每次用户任务最多处理的工具调用请求数（默认 `50`；失败请求也计数，超出部分只回填拒绝结果）
 - `CYBERCLAW_RECURSION_LIMIT`: LangGraph 单次运行递归上限（默认 `50`，至少为模型调用上限的两倍再加一）
+- `CYBERCLAW_CONTEXT_MAX_TOKENS`: 上下文窗口近似值（默认 `64000`），用于分层裁剪而非精确计费
 - `CYBERCLAW_ENABLE_SHELL`: 是否显式启用受限程序执行（默认关闭）
 - `CYBERCLAW_SHELL_ALLOWED_COMMANDS`: 允许启动的程序名称白名单，使用英文逗号分隔
 
@@ -570,8 +572,8 @@ grep "tool_call" logs/local_geek_master.jsonl | tail -20
 ```mermaid
 flowchart LR
     P["user_profile.md\n显式用户画像"] --> S["每轮重新构建 System Prompt"]
-    M["AgentState.messages"] --> T["达到 40 个用户回合"]
-    T --> R["保留最近 10 个完整回合"]
+    M["AgentState.messages"] --> T["约 70% Token\n或达到 40 个用户回合"]
+    T --> R["默认保留最近 10 个完整回合"]
     T --> U["旧消息生成 summary"]
     R --> S
     U --> S
@@ -580,18 +582,20 @@ flowchart LR
 
 - **用户画像**：`user_profile.md` 保存模型通过 `save_user_profile` 明确写入的内容；工具采用整文件覆盖
 - **会话状态**：SQLite 保存 LangGraph checkpoint，包括当前消息视图和 `summary`
-- **自动摘要**：达到 40 个用户回合时触发，保留最近 10 个完整回合，并从当前状态删除被压缩的旧消息
+- **自动摘要**：消息视图达到约 70% 窗口或 40 个用户回合时触发，默认保留最近 10 个完整回合，并从当前状态删除被压缩的旧消息
 - **边界**：这不是完整 transcript、事实数据库或自动冲突消解的长期记忆系统
 
 ### 上下文裁剪
 
 ![上下文裁剪](docs/context_cut.png)
 
-当对话轮次超过阈值时：
-1. 系统消息始终保留
-2. 保留最近 N 轮完整对话
-3. 旧对话压缩为摘要
-4. 当前规则按回合数工作，只能降低上下文增长，不能保证精确 Token 上限
+分层处理顺序：
+1. 约 50% 窗口时只裁剪旧工具结果的模型可见副本，不修改 Checkpoint 原消息
+2. 约 70% 窗口或 40 个用户回合时，按完整回合生成摘要并保留最近 10 回合
+3. 约 90% 窗口时继续按完整回合收缩，并对当前工具结果做紧急裁剪
+4. 如果单个用户输入等不可裁剪内容仍超过安全阈值，本轮停止请求模型
+
+这里使用约 `3` 个混合中英文字符对应一个 Token 的保守估算，只覆盖消息和工具调用参数，不是 Provider 计费 Token，也不包含动态 System Prompt 与工具 Schema。
 
 ### 轮次记忆
 
@@ -623,7 +627,7 @@ python -m pytest tests/test_lazy_loader.py tests/test_sandbox_tools.py -q
 |---------|---------|------|
 | `test_agent.py` | Agent 循环 | ✅ 通过 |
 | `test_builtins.py` | 内置工具 | ✅ 通过 |
-| `test_context_advanced.py` | 上下文修剪 | ✅ 通过 |
+| `test_context_advanced.py` | 分层上下文、协议安全切分与溢出保护 | ✅ 通过 |
 | `test_config_and_skill_loader.py` | 显式配置、编码与 Skill 加载 | ✅ 通过 |
 | `test_sandbox_tools.py` | 工作区与受限执行器 | ✅ 通过 |
 | `test_lazy_loader.py` | Skill 快照、缓存、冲突与 help→run 状态 | ✅ 通过 |
@@ -753,8 +757,9 @@ CyberClaw currently supports only its own Markdown Skill format. OpenClaw or Cla
 
 - **User profile and conversation summary**
   - User profile (`user_profile.md`): explicitly saved through an overwrite-style tool when the model decides an update is needed
-  - Conversation summary (`summary` in the SQLite checkpoint): compresses older messages at 40 user turns and keeps the latest 10 turns
-  - Trimming is currently turn-based rather than a precise token budget, and it is not a complete transcript archive
+  - Conversation summary (`summary` in the SQLite checkpoint): compresses older messages at roughly 70% of the window or 40 user turns and keeps the latest 10 complete turns by default
+  - Old tool bodies are snipped near 50%, complete turns collapse near 90%, and an oversized single turn stops before a model request
+  - Token counts are mixed-language character estimates that exclude the dynamic system prompt and tool schemas; this is not a complete transcript archive
 
 - **Bounded runs and interruption recovery**
   - Each new user task independently limits main Agent-loop model calls, tool requests, and LangGraph recursion depth
@@ -916,6 +921,7 @@ OPENAI_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 - `CYBERCLAW_MAX_MODEL_CALLS`: maximum main Agent-loop model calls per user task; defaults to `20` and excludes auxiliary context-summary calls
 - `CYBERCLAW_MAX_TOOL_CALLS`: maximum tool requests processed per user task; defaults to `50`, failed requests count, and excess requests receive paired rejection results
 - `CYBERCLAW_RECURSION_LIMIT`: LangGraph recursion cap per run; defaults to `50` and must be at least twice the model-call limit plus one
+- `CYBERCLAW_CONTEXT_MAX_TOKENS`: approximate context-window size, defaulting to `64000`; used for layered trimming rather than exact billing
 - `CYBERCLAW_ENABLE_SHELL`: explicitly enable restricted program execution; disabled by default
 - `CYBERCLAW_SHELL_ALLOWED_COMMANDS`: comma-separated allowlist of executable names
 
@@ -1256,8 +1262,8 @@ Edit `workspace/memory/user_profile.md`:
 ```mermaid
 flowchart LR
     P["user_profile.md\nexplicit user profile"] --> S["Rebuild System Prompt each turn"]
-    M["AgentState.messages"] --> T["Reach 40 user turns"]
-    T --> R["Keep latest 10 complete turns"]
+    M["AgentState.messages"] --> T["Roughly 70% tokens\nor 40 user turns"]
+    T --> R["Keep latest 10 complete turns by default"]
     T --> U["Summarize older messages"]
     R --> S
     U --> S
@@ -1266,18 +1272,20 @@ flowchart LR
 
 - **User profile**: `user_profile.md` stores content explicitly written through `save_user_profile`; the tool overwrites the whole file
 - **Conversation state**: SQLite stores LangGraph checkpoints, including the current message view and `summary`
-- **Automatic summarization**: triggers at 40 user turns, keeps the latest 10 complete turns, and removes compressed older messages from current state
+- **Automatic summarization**: triggers at roughly 70% of the window or 40 user turns, keeps the latest 10 complete turns by default, and removes compressed older messages from current state
 - **Boundary**: this is not a full transcript, fact database, or automatic conflict-resolving long-term memory system
 
 ### Context Trimming
 
 ![Context Trimming](docs/context_cut.png)
 
-When the number of conversation turns exceeds the threshold:
-1. System messages are always retained
-2. The latest N full conversation turns are retained
-3. Older conversations are compressed into summaries
-4. The current rule is turn-based; it reduces context growth but does not guarantee an exact token limit
+The layers run in this order:
+1. Near 50%, old tool results are clipped only in the model-visible copy; checkpoint messages are not mutated
+2. Near 70% or at 40 user turns, older complete turns are summarized and the latest 10 are retained
+3. Near 90%, more complete turns collapse and current tool results receive emergency clipping
+4. If unshrinkable content such as one user input remains over the safe threshold, the model request is stopped
+
+The estimator assumes roughly three mixed Chinese/English characters per token and covers messages plus tool-call arguments only. It is not provider billing usage and excludes the dynamic system prompt and tool schemas.
 
 ### Turn Memory
 
@@ -1309,7 +1317,7 @@ python -m pytest tests/test_lazy_loader.py tests/test_sandbox_tools.py -q
 |---------|---------|------|
 | `test_agent.py` | Agent loop | ✅ Passing |
 | `test_builtins.py` | Built-in tools | ✅ Passing |
-| `test_context_advanced.py` | Context trimming | ✅ Passing |
+| `test_context_advanced.py` | Layered context, protocol-safe splitting, and overflow protection | ✅ Passing |
 | `test_config_and_skill_loader.py` | Explicit configuration, encoding, and Skill loading | ✅ Passing |
 | `test_sandbox_tools.py` | Workspace and restricted executor | ✅ Passing |
 | `test_lazy_loader.py` | Skill snapshots, cache, conflicts, and help-to-run state | ✅ Passing |

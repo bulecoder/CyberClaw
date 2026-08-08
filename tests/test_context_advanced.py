@@ -1,11 +1,167 @@
 import unittest
 import os
 import sys
+from unittest.mock import patch
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from cyberclaw.core.context import trim_context_messages, AgentState
+from cyberclaw.core.context import (
+    AgentState,
+    ContextPolicy,
+    ContextPolicyError,
+    build_context_plan,
+    estimate_message_tokens,
+    render_summary_input,
+    trim_context_messages,
+)
+
+
+def _tool_turn(label: str, tool_content: str) -> list:
+    call_id = f"call-{label}"
+    return [
+        HumanMessage(content=f"human-{label}"),
+        AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "test_tool",
+                "args": {"label": label},
+                "id": call_id,
+                "type": "tool_call",
+            }],
+        ),
+        ToolMessage(
+            content=tool_content,
+            name="test_tool",
+            tool_call_id=call_id,
+        ),
+        AIMessage(content=f"answer-{label}"),
+    ]
+
+
+class TestLayeredContextPlan(unittest.TestCase):
+    def test_snips_old_tool_view_without_mutating_checkpoint_messages(self):
+        old_turn = _tool_turn("old", "x" * 2_000)
+        current_turn = _tool_turn("current", "current-result")
+        messages = old_turn + current_turn
+        policy = ContextPolicy(
+            max_tokens=1_200,
+            tool_output_chars=120,
+            emergency_tool_output_chars=60,
+        )
+
+        plan = build_context_plan(messages, policy)
+        visible_tools = [
+            message
+            for message in plan.visible_messages
+            if isinstance(message, ToolMessage)
+        ]
+
+        self.assertIn("tool_snip", plan.actions)
+        self.assertEqual(plan.discarded_messages, ())
+        self.assertEqual(old_turn[2].content, "x" * 2_000)
+        self.assertLessEqual(len(visible_tools[0].content), 120)
+        self.assertEqual(visible_tools[1].content, "current-result")
+
+    def test_token_trigger_discards_only_complete_old_turns(self):
+        first = _tool_turn("one", "a" * 500)
+        second = _tool_turn("two", "b" * 500)
+        current = _tool_turn("current", "short")
+        first[0] = HumanMessage(content="first-" + "x" * 900)
+        second[0] = HumanMessage(content="second-" + "y" * 900)
+        policy = ContextPolicy(
+            max_tokens=900,
+            keep_recent_turns=1,
+            tool_output_chars=120,
+            emergency_tool_output_chars=60,
+        )
+
+        plan = build_context_plan(first + second + current, policy)
+
+        self.assertIn("summarize", plan.actions)
+        self.assertEqual(list(plan.discarded_messages), first + second)
+        self.assertEqual(list(plan.visible_messages), current)
+        discarded_call_ids = {
+            message.tool_call_id
+            for message in plan.discarded_messages
+            if isinstance(message, ToolMessage)
+        }
+        self.assertEqual(discarded_call_ids, {"call-one", "call-two"})
+
+    def test_hard_collapse_keeps_latest_complete_turn(self):
+        turns = [
+            [
+                HumanMessage(content=f"request-{index}-" + "x" * 500),
+                AIMessage(content=f"answer-{index}-" + "y" * 500),
+            ]
+            for index in range(3)
+        ]
+        messages = [message for turn in turns for message in turn]
+        policy = ContextPolicy(
+            max_tokens=500,
+            keep_recent_turns=3,
+            tool_output_chars=120,
+            emergency_tool_output_chars=60,
+        )
+
+        plan = build_context_plan(messages, policy)
+
+        self.assertIn("hard_collapse", plan.actions)
+        self.assertEqual(list(plan.visible_messages), turns[-1])
+        self.assertEqual(list(plan.discarded_messages), turns[0] + turns[1])
+
+    def test_emergency_snip_preserves_current_tool_call_pair(self):
+        messages = _tool_turn("current", "z" * 5_000)
+        policy = ContextPolicy(
+            max_tokens=800,
+            tool_output_chars=120,
+            emergency_tool_output_chars=60,
+        )
+
+        plan = build_context_plan(messages, policy)
+
+        self.assertIn("emergency_tool_snip", plan.actions)
+        self.assertNotIn("context_overflow", plan.actions)
+        self.assertEqual(len(plan.visible_messages), 4)
+        self.assertIsInstance(plan.visible_messages[1], AIMessage)
+        self.assertIsInstance(plan.visible_messages[2], ToolMessage)
+        self.assertEqual(
+            plan.visible_messages[1].tool_calls[0]["id"],
+            plan.visible_messages[2].tool_call_id,
+        )
+
+    def test_unshrinkable_user_input_is_marked_as_overflow(self):
+        messages = [HumanMessage(content="x" * 5_000)]
+        policy = ContextPolicy(
+            max_tokens=500,
+            tool_output_chars=120,
+            emergency_tool_output_chars=60,
+        )
+
+        plan = build_context_plan(messages, policy)
+
+        self.assertIn("context_overflow", plan.actions)
+        self.assertEqual(plan.discarded_messages, ())
+
+    def test_summary_input_and_environment_configuration_are_bounded(self):
+        rendered = render_summary_input(
+            [ToolMessage(content="x" * 5_000, tool_call_id="call")],
+            max_chars=300,
+        )
+        self.assertLessEqual(len(rendered), 300)
+        self.assertGreater(estimate_message_tokens([HumanMessage(content="abc")]), 0)
+
+        with patch.dict(
+            os.environ,
+            {"CYBERCLAW_CONTEXT_MAX_TOKENS": "32000"},
+        ):
+            self.assertEqual(ContextPolicy.from_env().max_tokens, 32_000)
+        with patch.dict(
+            os.environ,
+            {"CYBERCLAW_CONTEXT_MAX_TOKENS": "invalid"},
+        ):
+            with self.assertRaises(ContextPolicyError):
+                ContextPolicy.from_env()
 
 
 class TestContextTrimming(unittest.TestCase):
