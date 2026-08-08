@@ -15,6 +15,13 @@ from pydantic.v1 import ValidationError as ValidationErrorV1
 from ..runtime import count_current_turn_tool_calls
 from .approval import ApprovalGrant, ApprovalRequest, ApprovalStore
 from .contracts import ToolMessageContent, ToolResult, ToolResultStatus
+from .hooks import (
+    ToolHookContext,
+    ToolHookFailure,
+    ToolHookPipeline,
+    ToolLifecycleHook,
+    ToolResultHookContext,
+)
 from .policy import (
     ToolArgumentsNormalizationError,
     ToolInvocation,
@@ -129,6 +136,7 @@ class ToolExecutorNode:
         max_tool_calls: int | None = None,
         policy: ToolPolicyEngine | None = None,
         approval_store: ApprovalStore | None = None,
+        hooks: Iterable[ToolLifecycleHook] = (),
     ) -> None:
         if max_tool_calls is not None and max_tool_calls < 0:
             raise ValueError("max_tool_calls 不能小于 0")
@@ -136,6 +144,7 @@ class ToolExecutorNode:
         self._max_tool_calls = max_tool_calls
         self._policy = policy or ToolPolicyEngine()
         self._approval_store = approval_store
+        self._hooks = ToolHookPipeline(hooks)
 
     @property
     def registry(self) -> ToolRegistry:
@@ -152,6 +161,35 @@ class ToolExecutorNode:
     @property
     def approval_store(self) -> ApprovalStore | None:
         return self._approval_store
+
+    @property
+    def hooks(self) -> ToolHookPipeline:
+        return self._hooks
+
+    def _finish_with_hooks(
+        self,
+        context: ToolHookContext,
+        result: ToolResult,
+        before_failures: tuple[ToolHookFailure, ...],
+    ) -> ToolResult:
+        after_failures = self._hooks.after_tool(
+            ToolResultHookContext(tool=context, result=result)
+        )
+        failures = before_failures + after_failures
+        if not failures:
+            return result
+
+        metadata = dict(result.metadata)
+        metadata["hook_failures"] = [failure.as_dict() for failure in failures]
+        return ToolResult(
+            tool_call_id=result.tool_call_id,
+            tool_name=result.tool_name,
+            status=result.status,
+            content=result.content,
+            error_type=result.error_type,
+            retryable=result.retryable,
+            metadata=metadata,
+        )
 
     def _metadata(
         self,
@@ -250,15 +288,16 @@ class ToolExecutorNode:
             )
 
         decision = self._policy.decide(spec, invocation, config)
+        thread_id = str(
+            config.get("configurable", {}).get(
+                "thread_id",
+                "system_default",
+            )
+        )
         grant: ApprovalGrant | None = None
+        request: ApprovalRequest | None = None
         if decision.behavior is not ToolPolicyBehavior.ALLOW:
             requires_approval = decision.behavior is ToolPolicyBehavior.ASK
-            thread_id = str(
-                config.get("configurable", {}).get(
-                    "thread_id",
-                    "system_default",
-                )
-            )
             if requires_approval and self._approval_store is not None:
                 grant = self._approval_store.consume(
                     thread_id=thread_id,
@@ -271,7 +310,6 @@ class ToolExecutorNode:
                     reason="用户已批准完全相同的工具调用",
                 )
             else:
-                request = None
                 if requires_approval and self._approval_store is not None:
                     request = self._approval_store.request(
                         thread_id=thread_id,
@@ -286,7 +324,14 @@ class ToolExecutorNode:
                     if request is not None
                     else "当前运行没有可用的审批存储。"
                 )
-                return ToolResult(
+                hook_context = ToolHookContext(
+                    thread_id=thread_id,
+                    spec=spec,
+                    invocation=invocation,
+                    policy_decision=decision,
+                )
+                before_failures = self._hooks.before_tool(hook_context)
+                result = ToolResult(
                     tool_call_id=call_id,
                     tool_name=spec.name,
                     status=ToolResultStatus.PERMISSION_DENIED,
@@ -308,8 +353,27 @@ class ToolExecutorNode:
                         approval=request,
                     ),
                 )
+                return self._finish_with_hooks(
+                    hook_context,
+                    result,
+                    before_failures,
+                )
 
-        args = dict(invocation.arguments)
+        hook_context = ToolHookContext(
+            thread_id=thread_id,
+            spec=spec,
+            invocation=invocation,
+            policy_decision=decision,
+        )
+        before_failures = self._hooks.before_tool(hook_context)
+        args = json.loads(invocation.canonical_arguments)
+
+        def finish(result: ToolResult) -> ToolResult:
+            return self._finish_with_hooks(
+                hook_context,
+                result,
+                before_failures,
+            )
 
         started = time.perf_counter()
         try:
@@ -336,28 +400,28 @@ class ToolExecutorNode:
                 if response.artifact is not None:
                     metadata["tool_artifact"] = response.artifact
                 if response.status == "error":
-                    return ToolResult(
+                    return finish(ToolResult(
                         tool_call_id=call_id,
                         tool_name=tool_name,
                         status=ToolResultStatus.EXECUTION_ERROR,
                         content=content,
                         error_type="ToolReportedError",
                         metadata=metadata,
-                    )
+                    ))
             else:
                 content = _normalize_content(response)
 
             metadata["output_chars"] = len(str(content))
-            return ToolResult(
+            return finish(ToolResult(
                 tool_call_id=call_id,
                 tool_name=tool_name,
                 status=ToolResultStatus.SUCCESS,
                 content=content,
                 metadata=metadata,
-            )
+            ))
         except (ValidationError, ValidationErrorV1) as exc:
             duration_ms = (time.perf_counter() - started) * 1000
-            return ToolResult(
+            return finish(ToolResult(
                 tool_call_id=call_id,
                 tool_name=tool_name,
                 status=ToolResultStatus.INVALID_ARGUMENTS,
@@ -373,10 +437,10 @@ class ToolExecutorNode:
                     decision=decision,
                     approval=grant,
                 ),
-            )
+            ))
         except PermissionError as exc:
             duration_ms = (time.perf_counter() - started) * 1000
-            return ToolResult(
+            return finish(ToolResult(
                 tool_call_id=call_id,
                 tool_name=tool_name,
                 status=ToolResultStatus.PERMISSION_DENIED,
@@ -389,10 +453,10 @@ class ToolExecutorNode:
                     decision=decision,
                     approval=grant,
                 ),
-            )
+            ))
         except TimeoutError:
             duration_ms = (time.perf_counter() - started) * 1000
-            return ToolResult(
+            return finish(ToolResult(
                 tool_call_id=call_id,
                 tool_name=tool_name,
                 status=ToolResultStatus.TIMEOUT,
@@ -405,10 +469,10 @@ class ToolExecutorNode:
                     decision=decision,
                     approval=grant,
                 ),
-            )
+            ))
         except Exception as exc:
             duration_ms = (time.perf_counter() - started) * 1000
-            return ToolResult(
+            return finish(ToolResult(
                 tool_call_id=call_id,
                 tool_name=tool_name,
                 status=ToolResultStatus.EXECUTION_ERROR,
@@ -421,7 +485,7 @@ class ToolExecutorNode:
                     decision=decision,
                     approval=grant,
                 ),
-            )
+            ))
 
     def __call__(
         self,

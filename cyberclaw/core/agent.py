@@ -21,8 +21,10 @@ from .context import (
 from .logger import audit_logger
 from .runtime import AgentRunLimits, count_current_turn_model_calls
 from .tools import (
-    ToolExecutorNode,
     ApprovalStore,
+    AuditToolHook,
+    ToolExecutorNode,
+    ToolLifecycleHook,
     ToolPolicyEngine,
     ToolRegistry,
     ToolRisk,
@@ -103,18 +105,25 @@ def create_agent_app(
     provider_policy: provider.ProviderRetryPolicy | None = None,
     tool_policy: ToolPolicyEngine | None = None,
     approval_store: ApprovalStore | None = None,
+    tool_hooks: Sequence[ToolLifecycleHook] | None = None,
 ):
     limits = run_limits or AgentRunLimits.from_env()
     active_context_policy = context_policy or ContextPolicy.from_env()
     active_provider_policy = provider_policy or provider.ProviderRetryPolicy.from_env()
     registry = build_tool_registry(tools=tools, tool_registry=tool_registry)
     actual_tools = list(registry.tools)
+    active_tool_hooks = (
+        tuple(tool_hooks)
+        if tool_hooks is not None
+        else (AuditToolHook(audit_logger),)
+    )
 
     tool_node = ToolExecutorNode(
         registry,
         max_tool_calls=limits.max_tool_calls,
         policy=tool_policy,
         approval_store=approval_store,
+        hooks=active_tool_hooks,
     )
 
     llm = provider.get_provider(
@@ -131,28 +140,6 @@ def create_agent_app(
         thread_id = config.get("configurable", {}).get("thread_id", "system_default")   # 读取会话ID
 
         raw_messages = state["messages"]
-
-        if raw_messages:    # 从后往前找连续的 ToolMessage，然后写入审计日志
-            recent_tool_msgs = []
-            for msg in reversed(raw_messages):
-                if msg.type == "tool":
-                    recent_tool_msgs.append(msg)
-                else:
-                    break
-            for msg in reversed(recent_tool_msgs):
-                structured_result = (
-                    msg.artifact.get("cyberclaw_tool_result", {})
-                    if isinstance(msg.artifact, dict)
-                    else {}
-                )
-                audit_logger.log_event(
-                    thread_id=thread_id,
-                    event="tool_result",
-                    tool=msg.name,
-                    result_chars=len(str(msg.content)),
-                    status=structured_result.get("status", msg.status),
-                    error_type=structured_result.get("error_type"),
-                )
 
         model_calls = count_current_turn_model_calls(raw_messages)
         if model_calls >= limits.max_model_calls:
@@ -304,18 +291,6 @@ def create_agent_app(
             provider_attempts=provider.get_invocation_attempts(response),
             usage=usage.as_dict() if usage else None,
         )
-        if response.tool_calls:
-            for tool_call in response.tool_calls:
-                tool_spec = registry.get(tool_call["name"])
-                audit_logger.log_event(
-                    thread_id=thread_id,
-                    event="tool_call",
-                    tool=tool_call["name"],
-                    args=tool_call["args"],
-                    source=(tool_spec.source.value if tool_spec else "unknown"),
-                    risk=(tool_spec.risk.value if tool_spec else "unknown"),
-                )
-
         if "messages" not in state_updates:
             state_updates["messages"] = []
         state_updates["messages"].append(response)  # 状态更新，本轮新 AIMessage也会追加进去

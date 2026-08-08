@@ -12,6 +12,14 @@ from .executor import (
     build_interrupted_tool_messages,
     find_pending_tool_calls,
 )
+from .hooks import (
+    AuditToolHook,
+    ToolHookContext,
+    ToolHookFailure,
+    ToolHookPipeline,
+    ToolLifecycleHook,
+    ToolResultHookContext,
+)
 from .policy import (
     ToolArgumentsNormalizationError,
     ToolInvocation,
@@ -24,10 +32,16 @@ from .registry import ToolRegistrationError, ToolRegistry
 
 __all__ = [
     "ToolExecutorNode",
+    "AuditToolHook",
     "ApprovalGrant",
     "ApprovalRequest",
     "ApprovalStore",
     "ToolProtocolError",
+    "ToolHookContext",
+    "ToolHookFailure",
+    "ToolHookPipeline",
+    "ToolLifecycleHook",
+    "ToolResultHookContext",
     "ToolArgumentsNormalizationError",
     "ToolInvocation",
     "ToolPolicyBehavior",
