@@ -7,6 +7,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 from cyberclaw.core.tools import (
+    ApprovalStore,
     ToolExecutorNode,
     ToolPolicyEngine,
     ToolProtocolError,
@@ -238,6 +239,36 @@ class TestToolExecutorResultClassification(unittest.TestCase):
         self.assertEqual(result.error_type, "ToolApprovalRequired")
         self.assertEqual(result.metadata["policy"]["behavior"], "ask")
 
+    def test_approved_invocation_executes_once_and_changed_args_do_not(self):
+        _execution_order.clear()
+        store = ApprovalStore()
+        executor = ToolExecutorNode(
+            _registry(ordered_tool),
+            policy=ToolPolicyEngine(approval_tools={"ordered_tool"}),
+            approval_store=store,
+        )
+        call = _call("ordered_tool", {"value": "approved"})
+
+        pending = executor.execute_call(call, _config())
+        request_id = pending.metadata["approval"]["request_id"]
+        store.approve(request_id, thread_id="thread-a")
+        approved = executor.execute_call(call, _config())
+        reused = executor.execute_call(call, _config())
+        changed = executor.execute_call(
+            _call("ordered_tool", {"value": "changed"}),
+            _config(),
+        )
+
+        self.assertEqual(_execution_order, ["approved"])
+        self.assertEqual(approved.status, ToolResultStatus.SUCCESS)
+        self.assertTrue(approved.metadata["approval"]["consumed"])
+        self.assertEqual(reused.error_type, "ToolApprovalRequired")
+        self.assertEqual(changed.error_type, "ToolApprovalRequired")
+        self.assertNotEqual(
+            reused.metadata["approval"]["request_id"],
+            changed.metadata["approval"]["request_id"],
+        )
+
 
 class TestToolExecutorNodeProtocol(unittest.TestCase):
     def test_only_consecutive_concurrent_safe_calls_run_in_parallel(self):
@@ -461,6 +492,80 @@ class TestToolExecutorNodeProtocol(unittest.TestCase):
 
 
 class TestToolExecutorGraphIntegration(unittest.TestCase):
+    @patch("cyberclaw.core.agent.audit_logger.log_event", return_value=True)
+    @patch("cyberclaw.core.agent.provider.get_provider")
+    def test_agent_graph_consumes_approved_call_on_the_next_turn(
+        self,
+        mock_get_provider,
+        _mock_log_event,
+    ):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from cyberclaw.core.agent import create_agent_app
+
+        _execution_order.clear()
+        store = ApprovalStore()
+        call = _call(
+            "ordered_tool",
+            {"value": "approved-once"},
+            "approval-call",
+        )
+        bound_model = Mock()
+        bound_model.invoke.side_effect = [
+            AIMessage(content="", tool_calls=[call]),
+            AIMessage(content="waiting for approval"),
+            AIMessage(content="", tool_calls=[call]),
+            AIMessage(content="completed"),
+        ]
+        model = Mock()
+        model.bind_tools.return_value = bound_model
+        mock_get_provider.return_value = model
+
+        app = create_agent_app(
+            tools=[ordered_tool],
+            checkpointer=MemorySaver(),
+            tool_policy=ToolPolicyEngine(approval_tools={"ordered_tool"}),
+            approval_store=store,
+        )
+        config = _config("approval-graph-thread")
+        first = app.invoke(
+            {
+                "messages": [HumanMessage(content="run protected tool")],
+                "summary": "",
+            },
+            config=config,
+        )
+        pending = next(
+            message
+            for message in first["messages"]
+            if isinstance(message, ToolMessage)
+        )
+        request_id = pending.artifact["cyberclaw_tool_result"]["metadata"][
+            "approval"
+        ]["request_id"]
+        store.approve(request_id, thread_id="approval-graph-thread")
+
+        second = app.invoke(
+            {
+                "messages": [HumanMessage(content="approved; retry exactly")],
+                "summary": "",
+            },
+            config=config,
+        )
+
+        self.assertEqual(_execution_order, ["approved-once"])
+        self.assertEqual(second["messages"][-1].content, "completed")
+        successful_tool_message = [
+            message
+            for message in second["messages"]
+            if isinstance(message, ToolMessage) and message.status == "success"
+        ][-1]
+        approval_metadata = successful_tool_message.artifact[
+            "cyberclaw_tool_result"
+        ]["metadata"]["approval"]
+        self.assertTrue(approval_metadata["consumed"])
+        self.assertNotIn("token", approval_metadata)
+
     @patch("cyberclaw.core.agent.audit_logger.log_event", return_value=True)
     @patch("cyberclaw.core.agent.provider.get_provider")
     def test_agent_graph_cannot_bypass_tool_policy(

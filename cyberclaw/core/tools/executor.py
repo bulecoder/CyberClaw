@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from pydantic.v1 import ValidationError as ValidationErrorV1
 
 from ..runtime import count_current_turn_tool_calls
+from .approval import ApprovalGrant, ApprovalRequest, ApprovalStore
 from .contracts import ToolMessageContent, ToolResult, ToolResultStatus
 from .policy import (
     ToolArgumentsNormalizationError,
@@ -127,12 +128,14 @@ class ToolExecutorNode:
         *,
         max_tool_calls: int | None = None,
         policy: ToolPolicyEngine | None = None,
+        approval_store: ApprovalStore | None = None,
     ) -> None:
         if max_tool_calls is not None and max_tool_calls < 0:
             raise ValueError("max_tool_calls 不能小于 0")
         self._registry = registry.snapshot()
         self._max_tool_calls = max_tool_calls
         self._policy = policy or ToolPolicyEngine()
+        self._approval_store = approval_store
 
     @property
     def registry(self) -> ToolRegistry:
@@ -146,6 +149,10 @@ class ToolExecutorNode:
     def policy(self) -> ToolPolicyEngine:
         return self._policy
 
+    @property
+    def approval_store(self) -> ApprovalStore | None:
+        return self._approval_store
+
     def _metadata(
         self,
         tool_name: str,
@@ -153,6 +160,7 @@ class ToolExecutorNode:
         *,
         invocation: ToolInvocation | None = None,
         decision: ToolPolicyDecision | None = None,
+        approval: ApprovalRequest | ApprovalGrant | None = None,
     ) -> dict[str, Any]:
         spec = self._registry.get(tool_name)
         if spec is None:
@@ -170,6 +178,18 @@ class ToolExecutorNode:
             metadata["policy"] = {
                 "behavior": decision.behavior.value,
                 "rule_id": decision.rule_id,
+            }
+        if isinstance(approval, ApprovalRequest):
+            metadata["approval"] = {
+                "request_id": approval.request_id,
+                "tool_name": approval.tool_name,
+                "arguments": approval.canonical_arguments,
+                "ttl_seconds": self._approval_store.ttl_seconds,
+            }
+        elif isinstance(approval, ApprovalGrant):
+            metadata["approval"] = {
+                "grant_id": approval.grant_id,
+                "consumed": True,
             }
         return metadata
 
@@ -230,29 +250,64 @@ class ToolExecutorNode:
             )
 
         decision = self._policy.decide(spec, invocation, config)
+        grant: ApprovalGrant | None = None
         if decision.behavior is not ToolPolicyBehavior.ALLOW:
             requires_approval = decision.behavior is ToolPolicyBehavior.ASK
-            return ToolResult(
-                tool_call_id=call_id,
-                tool_name=spec.name,
-                status=ToolResultStatus.PERMISSION_DENIED,
-                content=(
-                    f"需要用户确认：{decision.reason}。"
-                    if requires_approval
-                    else f"策略拒绝：{decision.reason}。"
-                ),
-                error_type=(
-                    "ToolApprovalRequired"
-                    if requires_approval
-                    else "ToolPolicyDenied"
-                ),
-                metadata=self._metadata(
-                    tool_name,
-                    0.0,
-                    invocation=invocation,
-                    decision=decision,
-                ),
+            thread_id = str(
+                config.get("configurable", {}).get(
+                    "thread_id",
+                    "system_default",
+                )
             )
+            if requires_approval and self._approval_store is not None:
+                grant = self._approval_store.consume(
+                    thread_id=thread_id,
+                    invocation_fingerprint=invocation.fingerprint,
+                )
+            if grant is not None:
+                decision = ToolPolicyDecision(
+                    behavior=ToolPolicyBehavior.ALLOW,
+                    rule_id="approval.once",
+                    reason="用户已批准完全相同的工具调用",
+                )
+            else:
+                request = None
+                if requires_approval and self._approval_store is not None:
+                    request = self._approval_store.request(
+                        thread_id=thread_id,
+                        tool_name=spec.name,
+                        canonical_arguments=invocation.canonical_arguments,
+                        invocation_fingerprint=invocation.fingerprint,
+                        reason=decision.reason,
+                    )
+                request_hint = (
+                    f"审批编号：{request.request_id}。"
+                    "请用户输入 /approve <编号>，然后重试完全相同的调用。"
+                    if request is not None
+                    else "当前运行没有可用的审批存储。"
+                )
+                return ToolResult(
+                    tool_call_id=call_id,
+                    tool_name=spec.name,
+                    status=ToolResultStatus.PERMISSION_DENIED,
+                    content=(
+                        f"需要用户确认：{decision.reason}。{request_hint}"
+                        if requires_approval
+                        else f"策略拒绝：{decision.reason}。"
+                    ),
+                    error_type=(
+                        "ToolApprovalRequired"
+                        if requires_approval
+                        else "ToolPolicyDenied"
+                    ),
+                    metadata=self._metadata(
+                        tool_name,
+                        0.0,
+                        invocation=invocation,
+                        decision=decision,
+                        approval=request,
+                    ),
+                )
 
         args = dict(invocation.arguments)
 
@@ -273,6 +328,7 @@ class ToolExecutorNode:
                 duration_ms,
                 invocation=invocation,
                 decision=decision,
+                approval=grant,
             )
 
             if isinstance(response, ToolMessage):
@@ -315,6 +371,7 @@ class ToolExecutorNode:
                     duration_ms,
                     invocation=invocation,
                     decision=decision,
+                    approval=grant,
                 ),
             )
         except PermissionError as exc:
@@ -330,6 +387,7 @@ class ToolExecutorNode:
                     duration_ms,
                     invocation=invocation,
                     decision=decision,
+                    approval=grant,
                 ),
             )
         except TimeoutError:
@@ -345,6 +403,7 @@ class ToolExecutorNode:
                     duration_ms,
                     invocation=invocation,
                     decision=decision,
+                    approval=grant,
                 ),
             )
         except Exception as exc:
@@ -360,6 +419,7 @@ class ToolExecutorNode:
                     duration_ms,
                     invocation=invocation,
                     decision=decision,
+                    approval=grant,
                 ),
             )
 

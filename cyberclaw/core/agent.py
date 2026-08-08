@@ -22,6 +22,7 @@ from .logger import audit_logger
 from .runtime import AgentRunLimits, count_current_turn_model_calls
 from .tools import (
     ToolExecutorNode,
+    ApprovalStore,
     ToolPolicyEngine,
     ToolRegistry,
     ToolRisk,
@@ -101,6 +102,7 @@ def create_agent_app(
     context_policy: ContextPolicy | None = None,
     provider_policy: provider.ProviderRetryPolicy | None = None,
     tool_policy: ToolPolicyEngine | None = None,
+    approval_store: ApprovalStore | None = None,
 ):
     limits = run_limits or AgentRunLimits.from_env()
     active_context_policy = context_policy or ContextPolicy.from_env()
@@ -112,6 +114,7 @@ def create_agent_app(
         registry,
         max_tool_calls=limits.max_tool_calls,
         policy=tool_policy,
+        approval_store=approval_store,
     )
 
     llm = provider.get_provider(
@@ -252,7 +255,8 @@ def create_agent_app(
             "2. 程序执行能力默认关闭；即使用户显式启用，也只能调用配置白名单中的单个程序，不支持管道、重定向、命令连接或嵌套 Shell。\n"
             "3. 不得使用 Python、Node.js 等解释器的内联代码参数绕过限制，也不得运行意图访问 office 外部资源的脚本。\n"
             "4. 工具返回权限拒绝时必须停止该操作，不得通过其他工具或编码方式绕过。\n"
-            "5. 当前边界属于受限工作区和防误操作规则，不是操作系统级隔离沙盒；不要向用户声称已经实现绝对安全。"
+            "5. 工具要求用户审批时，本轮不得重复调用；应提示用户在终端批准或拒绝。\n"
+            "6. 当前边界属于受限工作区和防误操作规则，不是操作系统级隔离沙盒；不要向用户声称已经实现绝对安全。"
         )
 
         sys_prompt += (

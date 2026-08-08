@@ -1,3 +1,4 @@
+from .approval import ApprovalGrant, ApprovalRequest, ApprovalStore
 from .contracts import (
     ToolResult,
     ToolResultStatus,
@@ -23,6 +24,9 @@ from .registry import ToolRegistrationError, ToolRegistry
 
 __all__ = [
     "ToolExecutorNode",
+    "ApprovalGrant",
+    "ApprovalRequest",
+    "ApprovalStore",
     "ToolProtocolError",
     "ToolArgumentsNormalizationError",
     "ToolInvocation",

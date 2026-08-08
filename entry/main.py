@@ -20,6 +20,7 @@ from cyberclaw.core.environment import load_project_env
 from cyberclaw.core.heartbeat import pacemaker_loop
 from cyberclaw.core.logger import audit_logger
 from cyberclaw.core.runtime import AgentRunLimits, STOP_TASK, shutdown_task_queue
+from cyberclaw.core.tools import ApprovalStore, ToolPolicyEngine, ToolRisk
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -98,6 +99,11 @@ async def async_main():
     current_model = os.getenv("DEFAULT_MODEL", "glm-5")
     run_limits = AgentRunLimits.from_env()
     task_queue: asyncio.Queue[object] = asyncio.Queue(maxsize=100)
+    approval_store = ApprovalStore()
+    tool_policy = ToolPolicyEngine(
+        approval_risks={ToolRisk.MEDIUM, ToolRisk.HIGH}
+    )
+    thread_id = "local_geek_master"
 
     async with AsyncSqliteSaver.from_conn_string(DB_PATH) as memory:
         app = create_agent_app(
@@ -105,9 +111,11 @@ async def async_main():
             model_name=current_model,
             checkpointer=memory,
             run_limits=run_limits,
+            tool_policy=tool_policy,
+            approval_store=approval_store,
         )
         config = {
-            "configurable": {"thread_id": "local_geek_master"},
+            "configurable": {"thread_id": thread_id},
             "recursion_limit": run_limits.recursion_limit,
         }
 
@@ -179,6 +187,25 @@ async def async_main():
                                         cprint(formatted_out + "\033[0m")
                                 else:
                                     spinner.is_tool_calling = False
+                                    for tool_message in node_data.get("messages", []):
+                                        artifact = getattr(tool_message, "artifact", None)
+                                        result = (
+                                            artifact.get("cyberclaw_tool_result", {})
+                                            if isinstance(artifact, dict)
+                                            else {}
+                                        )
+                                        approval = result.get("metadata", {}).get(
+                                            "approval", {}
+                                        )
+                                        request_id = approval.get("request_id")
+                                        if request_id:
+                                            cprint(
+                                                "  \033[33m● 需要用户审批\033[0m\n"
+                                                f"    工具：{approval['tool_name']}\n"
+                                                f"    参数：{approval['arguments']}\n"
+                                                f"    批准一次：/approve {request_id}\n"
+                                                f"    拒绝：/deny {request_id}"
+                                            )
                     except asyncio.CancelledError:
                         try:
                             repaired_calls = await asyncio.wait_for(
@@ -246,6 +273,34 @@ async def async_main():
                     if user_input.lower() in ["/exit", "/quit"]:
                         cprint("  \033[38;5;141m✦ 正在安全停止，CyberClaw 进入休眠。\033[0m")
                         return
+                    command, _, request_id = user_input.partition(" ")
+                    if command.lower() == "/approve":
+                        grant = approval_store.approve(
+                            request_id.strip(),
+                            thread_id=thread_id,
+                        )
+                        if grant is None:
+                            cprint("  \033[33m[ 审批编号无效、已处理或已过期。]\033[0m\n")
+                            continue
+                        cprint("  \033[32m[ 已批准一次，将重试完全相同的工具调用。]\033[0m\n")
+                        await task_queue.put(
+                            "用户已在终端批准上一个工具调用。"
+                            "请使用完全相同的工具名称和参数重新发起；"
+                            "不要修改参数或改为其他高风险操作。"
+                        )
+                        continue
+                    if command.lower() == "/deny":
+                        denied = approval_store.deny(
+                            request_id.strip(),
+                            thread_id=thread_id,
+                        )
+                        message = (
+                            "已拒绝该工具调用。"
+                            if denied
+                            else "审批编号无效、已处理或已过期。"
+                        )
+                        cprint(f"  \033[33m[ {message}]\033[0m\n")
+                        continue
                     await task_queue.put(user_input)
             finally:
                 redraw_task.cancel()
