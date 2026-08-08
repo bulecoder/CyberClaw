@@ -1,7 +1,7 @@
 # CyberClaw 具体改进与包装方案
 
-> 本文是设计与实施计划，不代表功能已经完成。  
-> 当前阶段只审计和规划，没有修改 CyberClaw 项目源码。  
+> 本文同时记录设计方案与实际实施状态；只有明确标记“已完成”的能力才代表已经落地。
+> 截至 2026-08-08，CyberClaw 自身问题修复和 CoreCoder 借鉴阶段已经完成，learn-claude-code 借鉴尚未开始。
 > 参考来源：CoreCoder、learn-claude-code，以及对 CyberClaw 自身源码、测试和文档的审计。
 
 ## 1. 标记说明
@@ -16,6 +16,17 @@
 | `[NEW]` | 为适配 CyberClaw 定位而提出的组合或重新设计 |
 
 一个改进可能同时有多个来源。例如“分层上下文”同时吸收 `[CC]` 的三级压缩和 `[LCC]` 的工具结果外置，再结合 CyberClaw 的 LangGraph checkpoint 重新实现，因此最终代码和验证才是我们的个人贡献。
+
+### 1.1 当前实施进度
+
+| 阶段 | 状态 | 结果 |
+|---|---|---|
+| CyberClaw 自身修复与加固 | 已完成 | 路径、计算器、Office 写入、Shell、Skill、日志、异步退出、配置和文档边界已经修正 |
+| CoreCoder 借鉴 | 已完成 | Tool Contract/Registry、统一 Executor、运行预算、中断协议修复、受控并行、分层 Context、Provider 调用边界已经落地 |
+| learn-claude-code 借鉴 | 未开始 | 下一阶段从 Permission/Hook/Session/Event/Memory/MCP 中选择与当前定位匹配的能力，不重复实现已有基础 |
+| 简历与面试文档 | CoreCoder 阶段快照已更新 | 当前已同步两阶段真实贡献；learn-claude-code 完成后再更新最终版本，始终只写有代码和测试证据的能力 |
+
+当前自动化与兼容基线：`143 passed, 1 skipped, 46 subtests passed`；CLI 正常；现有 `.venv`、`.env`、学校 OpenAI-compatible API 和所选模型已完成真实 Agent 冒烟验证。
 
 ## 2. 项目重新定位
 
@@ -178,11 +189,11 @@ Session-aware Runtime
 
 ## 4.1 P0：安全与正确性
 
-### P0-1 office 路径边界可被绕过 `[CCL][CC]`
+### P0-1 office 路径边界可被绕过 `[CCL][CC]`（已完成）
 
 位置：`cyberclaw/core/tools/sandbox_tools.py::_get_safe_path()`
 
-当前使用字符串 `startswith()` 判断目标路径是否位于 office 根目录。它不能可靠阻止：
+原实现使用字符串 `startswith()` 判断目标路径是否位于 office 根目录，不能可靠阻止：
 
 - 相同前缀的兄弟目录；
 - symlink/Junction 指向根目录外；
@@ -199,6 +210,8 @@ Path.resolve(strict=False)
 ```
 
 来源：问题由 CyberClaw 审计发现；“输入规范化 + 最终落点校验”的纵深防御参考 `[CC]` Session 路径设计。
+
+已完成：统一使用 canonical path 与 `relative_to()` 验证最终落点，拒绝绝对路径、父目录跳转和链接逃逸；读写使用相同边界，并补充兄弟前缀、绝对路径、symlink 和原子写入测试。
 
 ### P0-2 通用 Shell 不是安全沙盒 `[CCL]`（第一轮修复已完成）
 
@@ -226,11 +239,13 @@ Path.resolve(strict=False)
 
 长期改进：需要更强隔离时，将执行器移到低权限 worker、容器或虚拟化沙盒。完成前只能称为“受限工作区执行器”，不能称为严格安全沙盒。
 
-### P0-3 安全规则只存在于 Prompt/Docstring `[CCL][LCC]`
+### P0-3 安全规则只存在于 Prompt/Docstring `[CCL][LCC]`（基础契约已完成）
 
 位置：`cyberclaw/core/agent.py`、`builtins.py`、`skill_loader.py`
 
 当前系统提示词和工具说明包含大量“先说明、再执行”“不得越界”等要求，但工具执行前没有不可绕过的 Policy Engine，也没有人工审批状态。
+
+CoreCoder 阶段已完成基础：模型只会看到当前 Agent 实例注册的工具快照；`ToolSpec` 保存来源、风险和副作用元数据；所有调用经过统一 Executor。完整的 Hard Deny、上下文规则、逐次用户审批和 Hook 顺序仍属于 learn-claude-code 阶段。
 
 改进为统一管线：
 
@@ -247,11 +262,11 @@ ToolCall
 
 来源：执行管线主要参考 `[LCC]` Permission + Hooks；“不授予工具即没有能力”参考 `[CC]` 实例级工具集合。
 
-### P0-4 calculator 使用 `eval()` `[CCL]`
+### P0-4 calculator 使用 `eval()` `[CCL]`（已完成）
 
 位置：`cyberclaw/core/tools/builtins.py::calculator()`
 
-即使移除 `__builtins__`，Python 对象模型仍使 `eval()` 不适合作为不可信表达式计算器。应改为 AST 白名单解析，只允许数字、括号和规定的算术运算符，并限制表达式长度、数字范围和计算复杂度。
+原实现即使移除 `__builtins__`，Python 对象模型仍使 `eval()` 不适合作为不可信表达式计算器。现已改为 AST 白名单解析，只允许规定的数值与算术节点，并限制表达式长度、节点数、整数位数、幂指数及结果范围。
 
 ### P0-5 Skill 可形成任意 Shell 执行通道 `[CCL][LCC]`（第一轮修复已完成）
 
@@ -299,11 +314,15 @@ run_id → 一次请求
 tool_call_id → 一次工具调用
 ```
 
-### P1-2 上下文压缩由固定回合数触发 `[CCL][CC][LCC]`
+### P1-2 上下文压缩由固定回合数触发 `[CCL][CC][LCC]`（CoreCoder 基础层已完成）
 
 位置：`cyberclaw/core/context.py`、`agent.py`
 
-当前以 40 个用户回合触发并只保留 10 个近期回合，未统计 system prompt、工具 schema、工具结果、模型窗口和输出预留。摘要长度只通过 Prompt 要求，没有程序强制；摘要失败也缺少可靠回退。
+原实现只按 40 个用户回合触发并保留 10 个近期回合，没有上下文窗口预算和单轮溢出保护。
+
+CoreCoder 阶段已完成：引入可配置的近似 Token 窗口；约 50% 时优先裁剪旧 ToolResult 的模型可见副本；约 70% 时按完整用户回合选择摘要范围；约 90% 时继续收缩完整旧回合；最后执行紧急 ToolResult 裁剪，单轮仍超限则在请求模型前停止。Context Plan 本身不修改输入消息，并保护最近回合及 tool-call/result 配对。
+
+剩余边界：当前估算没有完整计入动态 system prompt、工具 schema 和输出预留；摘要成功后仍会从 checkpoint 删除被压缩消息，因此尚无独立完整 transcript；大 ToolResult 外置、摘要失败的确定性降级和 Memory Pipeline 留待 learn-claude-code 阶段。
 
 改进：建立 Context Pipeline：
 
@@ -315,7 +334,7 @@ tool_call_id → 一次工具调用
 → prompt-too-long 紧急压缩 [LCC]
 ```
 
-完整事件历史继续持久化，压缩只改变发给模型的 Context View。
+目标状态仍是完整 transcript/event 与模型 Context View 分离；这项完整状态存储尚未实现，不能把当前 checkpoint 描述成完整历史档案。
 
 ### P1-3 用户画像全文件覆盖且缺少作用域 `[CCL][LCC]`
 
@@ -386,13 +405,17 @@ tool_call_id → 一次工具调用
 
 当前采用明确的“启动快照”语义：运行中 LangGraph 的 `ToolNode` 和 `bind_tools()` 保持原工具集合，刷新后需要重启或重建 Agent 图才能绑定新快照，不再宣称自动热更新。
 
-### P1-8 Provider 缺少统一恢复与用量层 `[CCL][LCC][CC]`（配置边界第一轮已完成）
+### P1-8 Provider 缺少统一恢复与用量层 `[CCL][LCC][CC]`（CoreCoder 调用边界已完成）
 
 位置：`cyberclaw/core/provider.py`
 
-当前缺少分类重试、fallback、usage/cost、模型能力验证和清晰可选依赖。`langchain_anthropic`、`langchain_community` 的导入与 requirements 也不一致。
+原实现缺少分类重试、显式请求超时和 usage 观测，并可能与 SDK 内置重试形成多层重试。
 
 已完成的第一轮：Provider 名称与模型名规范化；兼容端点执行 URL 校验；`other` 明确要求 Base URL；显式参数优先于环境变量；学校 OpenAI-compatible 地址加入回归测试；缺少 Anthropic/Ollama 适配包时返回明确配置错误，不再暴露底层 `ModuleNotFoundError`。
+
+CoreCoder 阶段已完成：主 Agent、上下文摘要和配置探测统一经过 `invoke_model()`；OpenAI-compatible 与 Anthropic 禁用 SDK 内置重试并设置显式请求超时；限流、408/超时、连接和 5xx 使用有限指数退避，鉴权、其他 4xx 和未知错误立即失败；对外错误不包含 Provider 原始正文；审计事件记录实际尝试次数，并在 Provider 返回时规范化 input/output/total Token usage。
+
+剩余边界：尚无 jitter、fallback、模型能力探测、延迟统计和价格表；学校模型价格未知，因此当前不估算费用；Ollama 适配器暂不保证统一请求超时。
 
 改进为 Model Gateway：
 
@@ -413,9 +436,9 @@ tool_call_id → 一次工具调用
 
 已完成：`.env` 只通过显式路径和 UTF-8 编码加载；无效编码转换为可操作的配置错误；`config.py` 导入不再创建目录或打印；工作区由应用启动时显式初始化；Provider 和 Logger 导入均无运行时副作用；CLI 不再修改进程当前目录。现有环境变量名称、学校 Base URL、模型和 API Key 契约保持不变。
 
-### P1-10 工具结果和错误没有统一契约 `[CCL][CC]`
+### P1-10 工具结果和错误没有统一契约 `[CCL][CC]`（基础契约已完成）
 
-不同工具返回普通字符串，调用方难以判断成功、可重试错误、策略拒绝、超时和用户取消。应引入 `ToolResult`/`ToolError`，同时保留 LangChain 所需文本视图。
+已引入 `ToolResultStatus`、`ToolResult` 与统一 Tool Executor，能够区分成功、未知工具、参数错误、权限拒绝、执行异常、超时、预算超限和中断，并把结构化 metadata 放入 LangChain `ToolMessage.artifact`，同时保留模型可读正文。后续 Policy/Approval 仍需在同一契约中补充审批身份、规则命中和资源影响信息。
 
 ## 4.3 P2：工程质量与可观测性
 
@@ -434,7 +457,7 @@ tool_call_id → 一次工具调用
 
 ### P2-2 日志不是完整 Trace `[CCL][CC][LCC]`
 
-当前事件缺少 `run_id/span_id/parent_span_id`、阶段耗时、状态、模型、usage、重试和审批信息。`llm_input` 只记录消息数，无法表达一次 run 的因果链。
+当前 4 类有限事件已经补充工具来源/风险、Context actions、近似 Token、模型 phase、tool-call 数、Provider attempts 和可用 usage；Monitor 能显示请求尝试次数与总 Token。它仍缺少 `run_id/span_id/parent_span_id`、完整阶段耗时、审批事件和版本化 schema，因此还不能称为完整 Trace。
 
 改进：定义版本化 Agent Event：
 
@@ -460,9 +483,16 @@ run.completed / run.failed / run.cancelled
 - Logger 幂等关闭、脱敏、队列满和写入失败；
 - Skill 版本刷新、快照失效、冲突和 help→run 会话隔离；
 - Provider 配置优先级、URL 与学校兼容端点；
+- Tool Registry 的来源、风险、冲突、不可变快照和默认保守元数据；
+- ToolResult 的参数错误、异常、超时、预算拒绝及 tool-call ID 配对；
+- 单次任务模型/工具/递归预算和超限停止；
+- 取消后的未完成工具调用回填及幂等修复；
+- 只读安全工具并行、写工具串行屏障和结果顺序；
+- Context 分层裁剪、完整回合收缩、协议配对与单轮溢出；
+- Provider 瞬时/永久错误、有限退避、请求超时、attempts 和 usage；
 - README 关键能力边界和核心文件存在性。
 
-仍缺少完整 Agent 多轮/中断/压缩/恢复协议、Provider retry/fallback、真实 MCP 生命周期、跨平台 Junction 以及独立 model eval/benchmark；这些随对应架构阶段补充。
+仍缺少完整 Session 恢复、Provider fallback、Policy/Approval 绕过、真实 MCP 生命周期、跨平台 Junction 以及独立 model eval/benchmark；这些随对应架构阶段补充。
 
 ## 5. 文档描述与实际实现不一致
 
@@ -566,6 +596,8 @@ Observability
 
 来源：`[CCL][NEW]`
 
+当前状态：**部分完成**。已有隔离 `.venv`、可编辑安装、基础 `pyproject.toml`、完整 pytest 回归和真实配置兼容门禁；`uv.lock`、统一 lint/type 配置、CI、依赖分组和 legacy 文件收敛仍未完成。
+
 目标：先让后续修改可安装、可测试、可回滚，不改变产品行为。
 
 未来涉及文件：
@@ -594,6 +626,8 @@ Observability
 ## 阶段 1：重构 Tool Runtime 与安全边界
 
 来源：`[CC]` 实例级能力、结构化错误、路径纵深防御；`[LCC]` Permission/Hook/Registry；`[CCL]` 当前 sandbox、Skill、calculator 问题。
+
+当前状态：**CoreCoder 基础层已完成，learn-claude-code 管线待完成**。`ToolSpec`、`ToolResult`、Registry、Executor、安全路径、AST calculator、受限 Shell 和版本化 Skill 已落地；Policy、Approval、Hook 以及未来 MCP 的统一接入尚未实现。
 
 建议新增：
 
@@ -643,6 +677,8 @@ entry/main.py
 
 来源：`[CC]` Session/CLI 与协议不变量；`[LCC]` 类型化通知和单消费者；`[CCL]` 固定 thread、队列退出和日志问题。
 
+当前状态：**可靠运行时基础已完成，多会话与类型化事件未完成**。已有有界单消费者队列、可靠 shutdown、运行预算、中断协议回填和有限脱敏日志；Session Manager、分层 ID、类型化请求及版本化 Trace 尚未实现。
+
 建议新增：
 
 ```text
@@ -686,6 +722,8 @@ cyberclaw/core/config.py
 ## 阶段 3：分层 Context 与可管理 Memory
 
 来源：`[CC]` 三级压缩和 safe split；`[LCC]` ToolResult 外置、reactive compact、memory selection/extraction/consolidation；`[CCL]` 固定回合摘要和画像覆盖问题。
+
+当前状态：**CoreCoder 分层 Context 基础已完成，Memory 与完整状态分离未完成**。已有近似 Token 预算、工具结果裁剪、完整回合收缩和溢出保护；artifact store、完整 transcript、摘要降级、结构化 Memory 与动态 Prompt Builder 尚未实现。
 
 建议新增：
 
@@ -731,6 +769,8 @@ save_user_profile 工具
 
 来源：`[LCC]` 动态发现、命名空间和统一工具池；`[CCL]` README 已宣称但代码没有 MCP；`[NEW]` 使用真实协议和生命周期实现。
 
+当前状态：**未开始**。现有 Tool Registry 只是接入基础，尚不存在 MCP transport、session、动态发现或 adapter。
+
 前提：阶段 1 的 Tool Registry/Policy 已完成，否则 MCP 会直接扩大攻击面。
 
 建议新增：
@@ -765,6 +805,8 @@ cyberclaw/mcp/errors.py
 ## 阶段 5：可靠调度、模型恢复与评测
 
 来源：`[LCC]` Cron producer/consumer 和 Error Recovery；`[CC]` Provider 重试/用量；`[CCL]` Heartbeat、Provider 和指标问题。
+
+当前状态：**Provider 基础层已完成，其余未完成**。已有错误分类、有限指数退避、请求超时、attempts 与 Token usage；fallback、费用、可靠调度状态机、eval 和 benchmark 尚未实现。
 
 建议新增或修改：
 
@@ -812,22 +854,22 @@ benchmarks/
 
 | 改进点 | CoreCoder | learn-claude-code | CyberClaw 自身审计 |
 |---|---:|---:|---:|
-| 有界 run 预算 | ✓ |  | 当前缺少应用级预算 |
-| Tool Registry/能力集合 | 实例级工具作用域 | 动态统一工具池 | ToolNode 创建时固定 |
-| Policy/Approval | 通过不给工具限制能力 | 完整执行前管线 | 目前主要靠 Prompt |
-| Hook/Event | CLI callbacks | 生命周期 Hook | 4 类有限事件已对齐，尚未形成版本化 Trace |
-| 结构化 ToolResult | 参数错误分类 | 统一分发与通知 | 当前主要返回字符串 |
+| 有界 run 预算 | ✓ |  | 已实现每任务模型、工具和递归上限 |
+| Tool Registry/能力集合 | 实例级工具作用域 | 动态统一工具池 | 已实现内置/Skill/Custom 启动快照；MCP 与动态 Policy 过滤待实现 |
+| Policy/Approval | 通过不给工具限制能力 | 完整执行前管线 | 已有风险/副作用元数据，Hard Deny/Approval/Hook 待实现 |
+| Hook/Event | CLI callbacks | 生命周期 Hook | 4 类有限事件已扩充，尚未形成 Hook Pipeline 和版本化 Trace |
+| 结构化 ToolResult | 参数错误分类 | 统一分发与通知 | 已实现统一状态、错误分类和 LangChain 文本视图 |
 | 安全路径 | Session 纵深防御 |  | 已改为 canonical path + `relative_to()` 边界 |
 | 安全编辑/Diff | 唯一匹配与 unified diff |  | 当前只有覆盖/追加 |
-| 分层 Context | 三级压缩、safe split | 结果外置、microcompact、reactive compact | 固定回合摘要 |
+| 分层 Context | 三级压缩、safe split | 结果外置、microcompact、reactive compact | 已实现预算驱动的裁剪/回合收缩/溢出保护；结果外置和完整 transcript 待实现 |
 | Memory Pipeline | 摘要降级 | 选择/提取/整合 | 画像整文件覆盖 |
 | 子 Agent | 上下文隔离、禁递归 | 受限工具和任务协作 | 当前未实现，暂缓 |
-| 异步任务 | 线程并行工具 | background + notification | 有界单消费者队列与可靠 shutdown，尚无类型化通知 |
+| 异步任务 | 线程并行工具 | background + notification | 已实现安全标记驱动的受控并行、有界队列与可靠 shutdown，尚无后台任务通知 |
 | Scheduler |  | producer/queue/consumer | 生命周期已修正，JSON ack/retry 仍缺失 |
-| Provider Recovery | retry/usage/cost | fallback/超限恢复 | 配置校验已完成，恢复与用量层仍缺失 |
+| Provider Recovery | retry/usage/cost | fallback/超限恢复 | 已实现分类重试、超时、attempts/usage；fallback、费用与超限恢复待实现 |
 | MCP |  | 动态发现/命名空间（教学 mock） | 未实现，README 已明确标为未来方向 |
 | Session/CLI | 安全保存与恢复 | 类型化任务通知 | 固定 `local_geek_master` |
-| Tracing/Eval | 跨模块不变量测试 | Hook/集成数据流 | 日志字段、测试和指标不足 |
+| Tracing/Eval | 跨模块不变量测试 | Hook/集成数据流 | 已扩充不变量测试与有限事件字段；完整 Trace、eval 和 benchmark 待实现 |
 
 ## 9. 推荐的第一版范围
 
@@ -969,38 +1011,35 @@ benchmarks/
 
 ## 12. 下一步执行顺序
 
-三份分析完成后，真正修改代码时建议严格按以下顺序：
+CyberClaw 自身修复与 CoreCoder 借鉴已经完成。下一阶段不再从原始清单起点重复建设，而应先用 `02-learn-claude-code-analysis.md` 对照当前代码重新收敛范围：
 
 ```text
-1. 建立 baseline tag，脱敏记录当前 .venv、.env 配置契约、启动和功能测试结果
-2. 修正文档中的高风险错误声明
-3. 建立 pyproject/uv/CI 工程底座
-4. 写 Tool Runtime ADR 和不变量测试
-5. 实现 Tool Contract/Registry
-6. 实现 Policy/Approval/Hook
-7. 修复路径、calculator、Shell 和 Skill 边界
-8. 加入 Session/Run IDs 与类型化 Trace
-9. 接入第一个真实 MCP server
-10. 完成安全回归、演示、报告和 README 包装
+1. 以当前 143 tests + 学校 API 冒烟结果作为 learn-claude-code 阶段基线
+2. 复核 LCC 的 s01-s20，只选择符合“可控本地 Agent Harness”定位的机制
+3. 优先设计 Permission / Approval / Hook，使现有 Tool Registry 与 Executor 形成完整执行前管线
+4. 再设计 Session / typed request / versioned event，补足会话与因果追踪边界
+5. 按实际收益选择 artifact、Memory 和 prompt-too-long 恢复，不重复重写现有 Context 基础
+6. Registry + Policy + 生命周期稳定后，再接入第一个真实 MCP server
+7. 每个能力继续按独立 commit 完成测试、现有环境兼容和真实主链冒烟
+8. 全部计划改造完成后，再统一更新 notes/interview、README 项目亮点和简历表述
 ```
 
-在第 4 步开始写业务代码前，应先确定 Tool Contract 和审批状态机；这两个接口会影响后面 Skill、MCP、日志和测试，越晚修改成本越高。
+现有 Tool Contract/Registry/Executor 是下一阶段的基础，不应推翻重写。开始 Permission 实现前，应先确定审批状态机、参数规范化结果和 approval token 的绑定内容；这些接口会影响后面的 Skill、MCP、日志和测试。
 
 上述每一步都采用“改动 → 离线测试 → 现有环境冒烟 → 检查 secret 与 Git diff → 再提交”的节奏。我们不会在最开始删除旧入口、重建 `.env` 或一次性替换整个运行时，而会先增加兼容层，再迁移调用方，最后才清理确认无用的旧实现。
 
 ## 13. 最终判断
 
-CyberClaw 目前已经具备一个可运行 Agent 原型，但离“更加完善且有个人技术深度的简历项目”最大的距离，不是缺少更多工具，而是：
+经过自身修复和 CoreCoder 借鉴后，CyberClaw 已从原始可运行原型演进为具有基础运行时边界的本地 Agent Harness。当前最主要的剩余距离不是缺少更多工具，而是：
 
 ```text
-安全约束没有程序强制
-运行状态和会话边界不清楚
-上下文与完整历史没有分离
+工具风险已有元数据，但缺少统一 Policy 与用户审批
+运行预算和取消已受控，但多会话与分层 ID 仍缺失
+上下文已有分层视图，但完整 transcript、artifact 和 Memory 尚未分离
 外部工具没有真实标准协议接入
-执行过程缺少可验证的因果证据
-文档声明超过实际能力
+事件已有有限元数据，但尚无版本化因果 Trace 和评测体系
 ```
 
-CoreCoder 帮助我们补足小而可靠的运行时不变量；learn-claude-code 帮助我们建立可扩展 Harness 的能力地图；CyberClaw 的 LangGraph、异步队列、checkpoint 和终端原型则是实际改造基础。
+CoreCoder 已帮助我们补足小而可靠的运行时不变量；learn-claude-code 将用于建立可扩展 Harness 的 Permission、Hook、Session/Event、Memory 和 MCP 能力；CyberClaw 的 LangGraph、异步队列、checkpoint 和终端仍是实际改造基础。
 
 后续不应把三个项目简单拼接，而应围绕“策略可控的本地 Agent Harness”这一条主线重新设计、实现和验证。只有完成端到端功能、失败场景、测试数据和文档后，相应内容才适合写入简历。

@@ -3,6 +3,7 @@
 > 研究对象：`E:\graduate_student\projects\CoreCoder`  
 > 研究范围：README、`article/`、`notes/`、核心源码、测试与项目配置  
 > 本文目的：提炼可以迁移到 CyberClaw 的工程思想，不复制代码，也不把参考项目已有成果包装成个人原创
+> 时点说明：第 1～7 节保留改造前的分析与建议；第 8 节是完成 CoreCoder 借鉴后的实际实现状态。
 
 ## 1. 项目定位
 
@@ -60,7 +61,7 @@ CoreCoder 用当前 Agent 自己的 `_tool_by_name` 查找工具。子 Agent 创
 
 > 限制能力最可靠的方式，是不把能力交给执行主体，而不只是写一句“请勿使用”。
 
-CyberClaw 当前把内置工具和 Skill 工具整体绑定给模型，安全限制主要依赖 system prompt 和工具说明。后续应引入按会话、角色和任务构建的 Tool Registry，使“可见工具集合”本身成为权限边界。
+分析时的 CyberClaw 把内置工具和 Skill 工具整体绑定给模型，安全限制主要依赖 system prompt 和工具说明。后续应引入按会话、角色和任务构建的 Tool Registry，使“可见工具集合”本身成为权限边界。
 
 ### 3.3 工具参数错误与内部异常分开
 
@@ -117,7 +118,7 @@ CoreCoder 采用由轻到重的三级处理：
 4. 每层处理后重新估算，空间足够就停止；
 5. 摘要模型失败时必须有确定性降级方案。
 
-CyberClaw 当前只按固定用户回合数触发摘要，并保留固定数量近期回合。建议改为 Token 预算驱动，并把完整事件历史与“本轮发给模型的压缩视图”分开保存。
+分析时的 CyberClaw 只按固定用户回合数触发摘要，并保留固定数量近期回合。建议改为 Token 预算驱动，并把完整事件历史与“本轮发给模型的压缩视图”分开保存。
 
 ### 3.6 并行前先声明副作用
 
@@ -192,7 +193,7 @@ CoreCoder 测试里较有价值的不是数量，而是测试对象：
 
 ## 4. 建议吸收到 CyberClaw 的内容
 
-| 借鉴点 | CyberClaw 当前情况 | 建议的重新实现方式 | 优先级 |
+| 借鉴点 | CyberClaw 分析时情况 | 建议的重新实现方式 | 优先级 |
 |---|---|---|---|
 | 有界执行预算 | LangGraph 循环无明确应用级预算 | 为每次 run 增加轮次、Token、时间和工具次数预算 | P0 |
 | 实例级工具权限 | 默认整组工具绑定给模型 | 建立会话级 Tool Registry 与 Capability Set | P0 |
@@ -271,3 +272,49 @@ CoreCoder 给 CyberClaw 的最大价值不是增加更多功能，而是教会�
 ```
 
 后续实现时应保留 CoreCoder 的 MIT 许可和来源说明；借鉴设计思想后重新结合 LangGraph、CyberClaw 的异步终端和产品定位实现，不能把参考代码或上游成果描述成自己的原创。
+
+## 8. 实际借鉴结果（已完成）
+
+截至 2026-08-08，CoreCoder 借鉴阶段已经完成。CyberClaw 没有照搬 CoreCoder 的手写 Agent 循环，而是在保留 LangGraph 主结构的前提下，用 7 个独立提交重新实现了适合本项目的运行时边界。
+
+| 提交 | 实际落地内容 | 主要代码位置 |
+|---|---|---|
+| `606d0bb` | 引入实例级 `ToolSpec` 与 `ToolRegistry`，统一工具来源、风险、只读、并发和超时元数据，并拒绝重名工具 | `cyberclaw/core/tools/contracts.py`、`registry.py` |
+| `e75214b` | 建立统一工具执行入口，将成功、参数错误、超时、拒绝、中断和内部异常规范化为 `ToolResult`，再转换为 LangChain `ToolMessage` | `cyberclaw/core/tools/executor.py` |
+| `aa41a3d` | 为每个新用户任务增加模型调用、工具调用和 LangGraph 递归上限，超限后由程序停止运行 | `cyberclaw/core/runtime.py`、`agent.py` |
+| `49c1374` | 取消任务后查找没有结果的 tool call，并幂等补写 `INTERRUPTED` ToolResult，保护消息协议 | `cyberclaw/core/agent.py`、`entry/main.py` |
+| `f7266f1` | 只并行同一模型响应中连续且显式声明 `concurrent_safe` 的工具；未知、写入及未授权并发的工具形成串行屏障 | `cyberclaw/core/tools/executor.py` |
+| `6dfc7a9` | 引入近似 Token 预算、旧工具结果裁剪、完整回合收缩和单轮溢出保护，构建发送给模型的分层 Context View | `cyberclaw/core/context.py`、`agent.py` |
+| `05f49d9` | 统一 Agent、摘要与配置探测的模型调用边界；分类瞬时/永久错误，执行有限指数退避，设置请求超时并记录 attempts/usage | `cyberclaw/core/provider.py`、`agent.py` |
+
+最终兼容验证结果为：
+
+```text
+143 passed, 1 skipped, 46 subtests passed
+cyberclaw --help 正常
+现有 .env + 学校 OpenAI-compatible API 真实 Agent 调用正常
+Provider attempts 与 usage 可被读取
+```
+
+### 8.1 已吸收的核心思想
+
+```text
+工具能力先注册再执行
+→ 工具结果使用结构化契约
+→ 每次 run 受程序预算约束
+→ 中断后仍保持 tool-call 配对
+→ 只有显式安全的工具才能并行
+→ 上下文按预算分层收缩
+→ 所有模型调用经过统一 Provider 边界
+```
+
+### 8.2 明确没有照搬或尚未实现的内容
+
+- 没有加入 CoreCoder 的 Coding Agent 文件编辑、精确替换和 unified diff；
+- 没有加入子 Agent、多 Agent 或递归任务分解；
+- 没有把 SQLite checkpoint 退化成只保存 messages 的 JSON Session；
+- Tool Registry 已完成，但完整 Policy Engine、逐次用户审批和 Hook Pipeline 尚未实现；
+- Context 已有分层可见视图，但完整 transcript/artifact store、结构化 Memory Pipeline 尚未实现；
+- Provider 已有分类重试、超时和 Token usage，但没有 fallback、价格表和费用估算。
+
+因此，“CoreCoder 借鉴完成”指计划中的 7 个底层运行时改造已经实现并验证，不表示 CyberClaw 的全部目标架构已经完成。下一阶段应进入 learn-claude-code 借鉴，重点补充 CoreCoder 没有覆盖完整的 Permission、Hook、Session/Event、Memory 和 MCP 等 Harness 能力。

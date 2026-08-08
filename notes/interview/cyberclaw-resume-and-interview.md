@@ -1,7 +1,7 @@
 # CyberClaw 简历描述与面试手册
 
-> 适用版本：`v0.1.1：CyberClaw项目修复与完善`（commit `7a4783d`）  
-> 项目地址：<https://github.com/bulecoder/CyberClaw>  
+> 适用版本：CoreCoder 借鉴完成版（commit `05f49d9`，基于 tag `v0.1.1：CyberClaw项目修复与完善`）
+> 项目地址：<https://github.com/bulecoder/CyberClaw>
 > 上游项目：<https://github.com/ttguy0707/CyberClaw>
 
 这份文档有两个用途：
@@ -60,6 +60,10 @@ MIT 的 PAR 方法建议用“项目/背景（Project）—行动（Action）—
 - SQLite checkpoint、会话摘要和用户画像；
 - AST 安全计算器、受限文件工具和默认关闭的程序执行器；
 - instruction/executable 两类版本化 Markdown Skill；
+- 实例级 `ToolSpec`/`ToolRegistry`、统一 Tool Executor 与结构化 `ToolResult`；
+- 每任务模型/工具/递归预算、取消后的工具消息回填与安全标记驱动的受控并行；
+- 近似 Token 预算驱动的工具结果裁剪、完整回合收缩和上下文溢出保护；
+- Provider 错误分类、有限指数退避、显式超时及 attempts/Token usage 观测；
 - 有界单消费者任务队列、CLI 内 Heartbeat 和有序关闭；
 - 4 类脱敏 JSONL 审计事件及 Rich Monitor；
 - Windows 本地 `.venv`、`.env` 和学校 OpenAI-compatible API 运行路径。
@@ -69,9 +73,10 @@ MIT 的 PAR 方法建议用“项目/背景（Project）—行动（Action）—
 - MCP client/runtime；
 - OS、容器或虚拟机级沙盒；
 - 每次高风险操作的人工审批界面；
-- Tool Registry/Policy Engine 统一抽象；
+- 完整的 Tool Policy Engine、Approval Store 与 Hook Pipeline；
 - 多会话管理和 `run_id/tool_call_id` 完整 Trace；
-- Provider 重试、fallback、Token/费用统计；
+- Provider fallback、价格表与费用统计；
+- 完整 transcript、artifact store 与结构化 Memory Service；
 - 独立后台调度服务、可靠 ack/retry；
 - Coding Agent、多 Agent、Git worktree 隔离。
 
@@ -100,22 +105,22 @@ MIT 的 PAR 方法建议用“项目/背景（Project）—行动（Action）—
 > **CyberClaw——策略约束的本地 Agent Harness（二次开发）**  
 > Python / LangGraph / LangChain / asyncio / SQLite / pytest
 >
-> - 基于开源 LangGraph Agent 原型进行工程化加固，梳理 `agent → tools → agent` 状态循环，整合 OpenAI-compatible 模型、SQLite checkpoint、会话摘要、用户画像、内置工具与 Markdown Skill，形成可在 Windows 本地运行的终端 Agent Harness。
+> - 基于开源 LangGraph Agent 原型二次开发本地 Agent Harness，保留 `agent → tools → agent` 状态循环，并设计实例级 `ToolSpec/Registry` 与统一 Executor，将内置、Skill 和自定义工具规范化为带来源、风险、副作用、超时和结构化结果的能力快照。
 > - 重构本地工具安全边界：以规范路径校验拦截目录穿越和符号链接逃逸，以 AST 白名单替代 `eval` 计算器，并加入原子文件写入、读取/输出上限、默认关闭的程序白名单及最小化子进程环境，避免 API Key 继承。
-> - 设计版本化 Skill 快照与 `help → run` 两阶段协议：第三方 Skill 默认仅可读，显式可执行 Skill 固定 runtime/entrypoint；通过会话级完整阅读状态、SHA-256 内容摘要和 LRU 缓存，在说明书或入口变化后使旧执行资格失效。
-> - 完善异步运行时与可观测性：采用容量 100 的单消费者队列串行处理用户输入和 Heartbeat，使用停止哨兵、`Queue.join()`、超时取消实现有序退出；构建有界后台线程 JSONL 日志并递归脱敏敏感字段，当前回归套件达到 `95 passed、46 subtests passed`。
+> - 加固 Agent 运行时不变量：为每个任务设置模型/工具/递归预算；取消后幂等回填未完成 ToolResult；仅并行连续且显式标记安全的工具，并按原 `tool_call_id` 顺序返回；使用近似 Token 水位进行工具结果裁剪、完整回合收缩和请求前溢出保护。
+> - 统一模型调用与观测边界：对限流、超时、连接及 5xx 执行有限指数退避，对永久 4xx 立即失败，关闭 SDK 重复重试并记录 attempts/usage；保持现有 `.env` 与学校 API 兼容，当前回归为 `143 passed、1 skipped、46 subtests passed`。
 
 ### 3.4 一页简历空间不足时：3 条精简版
 
-> - 基于 LangGraph 二次开发本地 Agent Harness，整合 OpenAI-compatible Provider、Tool Calling、SQLite checkpoint、会话摘要、用户画像、Markdown Skill 与 CLI Heartbeat。
-> - 加固工具与 Skill 执行边界，实现规范路径校验、AST 安全计算、原子写入、默认关闭的程序白名单、最小子进程环境，以及基于内容摘要的 `help → run` 版本失效机制。
-> - 以有界单消费者队列和停止哨兵重构异步生命周期，并实现敏感信息脱敏、正文元数据化的 JSONL 审计日志；当前离线回归结果为 `95 passed、1 skipped、46 subtests passed`。
+> - 基于 LangGraph 二次开发本地 Agent Harness，设计实例级 Tool Registry、统一 Executor 和结构化 ToolResult，整合 OpenAI-compatible Provider、SQLite checkpoint 与版本化 Markdown Skill。
+> - 建立每任务运行预算、中断 ToolResult 回填、安全工具受控并行和近似 Token 分层 Context，在不破坏 tool-call/result 协议的前提下限制循环与上下文增长。
+> - 加固路径、文件、Shell、Skill 与日志边界，并统一 Provider 分类重试、请求超时和 usage 观测；保持学校 API 配置兼容，回归结果为 `143 passed、1 skipped、46 subtests passed`。
 
 ### 3.5 面向 Agent 开发实习的强调版
 
-> - 基于 LangGraph 构建并理解 ReAct 风格 `agent → tools → agent` 闭环，使用 `ToolNode` 执行结构化 Tool Call，以 `add_messages` reducer 和 SQLite checkpointer 持久化图状态。
-> - 实现按完整用户回合裁剪的上下文压缩，避免拆散 `AIMessage(tool_calls)` 与 `ToolMessage`；区分对话摘要与用户画像两类记忆，并在每轮动态组装 System Prompt。
-> - 将 Markdown Skill 区分为默认只读的 instruction 与固定入口的 executable，通过分页阅读、会话状态、版本摘要和缓存失效约束执行流程；同时加固路径、程序执行与审计日志边界。
+> - 在 LangGraph ReAct 闭环中引入不可变 ToolSpec、实例级 Registry 与统一 Executor，用结构化 ToolResult 表达参数错误、拒绝、超时、中断和预算超限，同时保留 LangChain ToolMessage 协议。
+> - 实现每任务模型/工具/递归预算、取消后的 tool-call 配对修复，以及基于 read-only/concurrent-safe 元数据的受控并行；写操作和未知工具形成串行屏障。
+> - 构建近似 Token 分层 Context 与统一 Provider 调用边界，支持旧工具结果裁剪、完整回合收缩、溢出阻断、瞬时错误有限重试及可用 usage 观测。
 
 ### 3.6 面向 Python 后端实习的强调版
 
@@ -125,12 +130,12 @@ MIT 的 PAR 方法建议用“项目/背景（Project）—行动（Action）—
 
 ### 3.7 英文简历简版
 
-> **CyberClaw — Policy-aware Local Agent Harness (Open-source Extension)**  
+> **CyberClaw — Policy-aware Local Agent Harness (Open-source Extension)**
 > Python, LangGraph, LangChain, asyncio, SQLite, pytest
 >
-> - Extended an open-source LangGraph agent prototype into a locally runnable harness that coordinates OpenAI-compatible models, tool calling, SQLite checkpoints, context summarization, user profiles, Markdown skills, and CLI-scoped scheduled tasks.
-> - Hardened local side-effect boundaries with canonical path validation, an AST-based arithmetic evaluator, atomic file replacement, an opt-in executable allowlist, bounded I/O, and a minimal subprocess environment that excludes model credentials.
-> - Implemented versioned `help → run` skill execution using fixed runtimes/entrypoints, session-scoped reading state, SHA-256 source digests, and bounded LRU caching; rebuilt async shutdown and sanitized JSONL auditing, with `95 passed` and `46 subtests passed` in the current regression suite.
+> - Extended an open-source LangGraph agent prototype with an instance-scoped tool registry, a unified executor, and structured tool outcomes covering validation failures, timeouts, interruptions, and run-budget rejection.
+> - Added per-task model/tool/recursion budgets, protocol-safe cancellation repair, metadata-gated concurrent tool execution, and layered approximate-token context reduction without reordering tool-call results.
+> - Centralized Provider retries, request timeouts, safe error classification, and usage telemetry while preserving the existing school OpenAI-compatible API setup; verified by `143 passed`, `1 skipped`, and `46 subtests`.
 
 ---
 
@@ -151,7 +156,7 @@ MIT 的 PAR 方法建议用“项目/背景（Project）—行动（Action）—
 
 ### 4.2 本轮二次开发的主要贡献
 
-从 tag `v0.1.0：开源CyberClaw带学习笔记` 到 `v0.1.1：CyberClaw项目修复与完善`，主要完成了以下工程改进：
+从 tag `v0.1.0：开源CyberClaw带学习笔记` 到当前 commit `05f49d9`，个人改进分为“原项目修复加固”和“CoreCoder 设计借鉴”两阶段。下表只列实现提交，不把面试文档提交计入技术贡献数量。
 
 | 提交 | 个人改进 | 主要证据 |
 |---|---|---|
@@ -163,10 +168,17 @@ MIT 的 PAR 方法建议用“项目/背景（Project）—行动（Action）—
 | `73357e5` | 修复异步退出竞态 | 单消费者有界队列、sentinel、queue accounting、producer/consumer shutdown |
 | `3ea1e77` | 消除配置导入副作用 | 显式 `.env`/workspace 初始化、Provider 参数优先级与 URL 校验 |
 | `7a4783d` | 对齐文档和工程契约 | README 能力边界、打包声明、文档契约测试 |
+| `606d0bb` | 引入实例级工具契约与注册表 | ToolSpec、来源/风险/副作用元数据、不可变快照、冲突检测 |
+| `e75214b` | 统一工具执行入口 | ToolResult 状态、参数校验、超时、错误分类、ToolMessage artifact |
+| `aa41a3d` | 增加 Agent 运行预算 | 每任务模型/工具调用上限、递归约束、超限停止 |
+| `49c1374` | 修复取消后的工具消息协议 | 扫描未配对 tool call、幂等回填 INTERRUPTED 结果 |
+| `f7266f1` | 实现元数据驱动的受控并行 | concurrent-safe 连续分组、串行屏障、结果顺序保持 |
+| `6dfc7a9` | 引入分层上下文预算 | 近似 Token 水位、旧 ToolResult 裁剪、完整回合收缩、溢出保护 |
+| `05f49d9` | 统一 Provider 调用边界 | 错误分类、有限指数退避、显式超时、attempts/usage 观测 |
 
 ### 4.3 推荐的口头说法
 
-> 这个项目不是我从零发明的。我先完整学习了上游的 LangGraph Agent 原型，然后把重点放在真实工程问题上：原来计算器使用动态求值、文件路径和 Shell 边界不够稳、Skill 阅读与执行版本可能不一致、后台任务退出和日志生命周期也存在竞态。我针对这些问题做了八个可独立回滚的提交，补充边界测试，并保持原有 `.env`、学校 API 和终端使用方式兼容。
+> 这个项目不是我从零发明的。我先完整学习上游 LangGraph Agent 原型，用 8 个提交修复路径、文件、Shell、Skill、日志、退出和配置问题；随后参考 CoreCoder 的运行时设计，再用 7 个提交加入 Tool Contract/Registry、统一 Executor、运行预算、中断协议修复、受控并行、分层 Context 和 Provider 调用边界。每个提交都保持原有 `.env`、学校 API 和终端使用方式兼容，并通过离线回归或最小真实 API 冒烟验证。
 
 这段回答能同时体现开源合规、源码理解、问题发现、工程实现和迭代能力。
 
@@ -180,9 +192,10 @@ flowchart TD
     H["Heartbeat 协程"] --> Q
     Q --> W["单一 Agent Worker"]
     W --> G["LangGraph agent 节点"]
-    G --> L["绑定工具的 LLM"]
+    G --> Ctx["Context Plan + Run Budget"]
+    Ctx --> L["Provider 调用边界\n绑定工具的 LLM"]
     L -->|"普通回答"| E["END / 输出回答"]
-    L -->|"tool_calls"| T["ToolNode"]
+    L -->|"tool_calls"| T["Tool Registry + Executor"]
     T --> G
     G <--> C["SQLite checkpoint\nmessages + summary"]
     G --> A["脱敏 JSONL 审计日志"]
@@ -194,38 +207,42 @@ flowchart TD
 1. `entry/main.py::user_input_loop()` 获取输入，并放入 `task_queue`；
 2. `entry/main.py::agent_worker()` 从队列取出任务，包装成 `HumanMessage`；
 3. `app.astream()` 进入 `cyberclaw/core/agent.py::agent_node()`；
-4. `trim_context_messages()` 判断是否压缩旧回合；
+4. `build_context_plan()` 根据近似 Token 水位裁剪旧工具结果、选择完整旧回合或阻断超限请求；
 5. Agent 读取 `user_profile.md`，拼接系统提示词和近期摘要；
-6. `llm_with_tools.invoke()` 得到普通回答或结构化 `tool_calls`；
-7. 普通回答经条件边直接结束；工具调用进入 `ToolNode`；
-8. 工具结果以 `ToolMessage` 回到 agent 节点，再由模型组织最终回答；
-9. LangGraph checkpointer 按 `thread_id=local_geek_master` 保存状态；
-10. worker 在 `finally` 中调用 `task_done()`，保证队列计数始终配平。
+6. `provider.invoke_model()` 按统一超时与重试策略得到普通回答或结构化 `tool_calls`；
+7. 普通回答经条件边结束；工具调用进入 Registry 驱动的统一 Executor；
+8. Executor 校验参数、预算和并发元数据，产生结构化 `ToolResult` 并转换为 `ToolMessage`；
+9. 工具结果回到 agent 节点，再由模型决定继续调用或组织最终回答；
+10. LangGraph checkpointer 按 `thread_id=local_geek_master` 保存状态；worker 在 `finally` 中配平队列计数。
 
 对应代码：
 
 - [entry/main.py](../../entry/main.py)：`async_main`、`agent_worker`、`user_input_loop`，约 91～246 行；
-- [agent.py](../../cyberclaw/core/agent.py)：`create_agent_app`、`agent_node`，约 17～181 行；
-- [context.py](../../cyberclaw/core/context.py)：`AgentState`、`trim_context_messages`，约 5～56 行。
+- [agent.py](../../cyberclaw/core/agent.py)：`create_agent_app`、`agent_node` 和中断回填；
+- [context.py](../../cyberclaw/core/context.py)：`ContextPolicy`、`ContextPlan` 与 `build_context_plan`；
+- [contracts.py](../../cyberclaw/core/tools/contracts.py)、[registry.py](../../cyberclaw/core/tools/registry.py)、[executor.py](../../cyberclaw/core/tools/executor.py)：工具契约、注册和执行链。
 
 ---
 
-## 6. 亮点一：LangGraph Agent 循环与工具调用
+## 6. 亮点一：LangGraph Agent 循环与统一 Tool Runtime
 
 ### 6.1 核心实现
 
-`create_agent_app()` 做了四件事：
+`create_agent_app()` 现在把 LangGraph 循环与工具运行时分开：
 
-1. 合并内置工具与启动时扫描到的 Skill 工具；
-2. 用 `llm.bind_tools(actual_tools)` 把工具名称、描述和参数 Schema 交给模型；
-3. 建立 `agent` 和 `tools` 两个节点；
-4. 通过 `tools_condition` 建立条件边，通过 `tools → agent` 建立工具结果回传闭环。
+1. 将内置、Skill 或显式传入工具转换成实例级 `ToolSpec` 快照；
+2. Registry 拒绝重名，并保存来源、风险、只读、并发和超时元数据；
+3. 用 `llm.bind_tools(registry.tools)` 只把当前实例能力交给模型；
+4. `agent` 节点负责模型决策，`tools` 节点委托统一 Executor 执行；
+5. Executor 产生 `ToolResult`，再转换成满足 LangChain 协议的 `ToolMessage`；
+6. `tools_condition` 与 `tools → agent` 保留模型—环境反馈闭环。
 
 关键代码位置：
 
-- [agent.py](../../cyberclaw/core/agent.py)：17～35 行，工具集合、`ToolNode` 和 `bind_tools`；
-- [agent.py](../../cyberclaw/core/agent.py)：164～179 行，StateGraph 节点和边；
-- [tools/base.py](../../cyberclaw/core/tools/base.py)：7～40 行，工具装饰器和同步工具的异步兼容层。
+- [agent.py](../../cyberclaw/core/agent.py)：Registry 构建、工具绑定和 StateGraph 节点；
+- [contracts.py](../../cyberclaw/core/tools/contracts.py)：`ToolSpec`、`ToolResultStatus`、`ToolResult`；
+- [registry.py](../../cyberclaw/core/tools/registry.py)：实例级注册、冲突检测和快照；
+- [executor.py](../../cyberclaw/core/tools/executor.py)：参数校验、执行、超时、预算和结果转换。
 
 ### 6.2 有工具和无工具时的区别
 
@@ -241,14 +258,14 @@ HumanMessage → agent → AIMessage(content) → END
 HumanMessage
 → agent
 → AIMessage(tool_calls)
-→ ToolNode
+→ Registry 驱动的 Tool Executor
 → ToolMessage
 → agent
 → AIMessage(content)
 → END
 ```
 
-模型不直接执行 Python 函数。`bind_tools` 只让模型知道可选工具及其 Schema；真正执行发生在 `ToolNode`。
+模型不直接执行 Python 函数。`bind_tools` 只让模型知道当前 Registry 中的工具及其 Schema；真正执行发生在统一 Executor。
 
 ### 6.3 面试追问
 
@@ -264,10 +281,15 @@ HumanMessage
 
 答：`CyberClawBaseTool` 默认只要求子类实现同步 `_run()`；异步调用时，`to_thread` 把同步函数交给线程池执行，使事件循环线程还能处理其他协程。它只是异步兼容方案，不会把文件或网络逻辑自动变成原生异步，也不能自动获得可靠的超时和取消语义。
 
+**问：为什么既需要 ToolResult，又要转换成 ToolMessage？**
+
+答：`ToolResult` 是应用内部契约，保存稳定状态、错误类型、retryable 和 metadata，方便预算、审计和测试；`ToolMessage` 是 LangChain/模型协议视图。Executor 把前者放入后者的 artifact，在保留结构化信息的同时让图和 Provider 继续使用标准消息协议。
+
 ### 6.4 边界
 
-- `agent_node` 本身仍调用同步 `llm.invoke()`；
-- 没有设置单次 Agent 最大步数、Token 预算和 Provider 重试；
+- `agent_node` 仍执行同步模型调用，但统一经过 `invoke_model()`，LangGraph 会在异步运行时调度同步节点；
+- Registry 是图创建时的能力快照，不是运行期动态 Policy Engine；
+- `ToolRisk` 等元数据已存在，但人工审批和 Hook Pipeline 尚未实现；
 - 当前工具集合在图编译时固定，Skill 更新后需要重启或重建图。
 
 ---
@@ -279,12 +301,21 @@ HumanMessage
 | 能力 | 保存什么 | 保存位置 | 当前语义 |
 |---|---|---|---|
 | Checkpoint | LangGraph 图状态 | `workspace/state.sqlite3` | 按固定 `thread_id` 恢复 `messages + summary` |
-| 会话摘要 | 被裁剪的旧对话进展 | `AgentState.summary`，随 checkpoint 保存 | 40 个用户回合触发，保留最近 10 回合 |
+| 会话摘要 | 被收缩的旧对话进展 | `AgentState.summary`，随 checkpoint 保存 | 达到回合阈值或约 70% Token 水位时选择旧完整回合，默认保留最近 10 回合 |
 | 用户画像 | 用户显式偏好与长期信息 | `workspace/memory/user_profile.md` | 模型决定何时整文件覆盖 |
 
-### 7.2 为什么按“完整用户回合”裁剪
+### 7.2 分层 Context 如何工作
 
-`trim_context_messages()` 以 `HumanMessage` 为一个新回合起点，把随后产生的 `AIMessage(tool_calls)`、`ToolMessage` 和最终 `AIMessage` 放在同一组。裁剪时删除完整的旧组，而不是按消息数量切片。
+`build_context_plan()` 先用混合中英文字符和消息开销近似估算 Token，再按由轻到重的顺序构建本轮模型可见视图：
+
+```text
+约 50%：裁剪旧 ToolResult 正文，保护最新用户回合
+→ 约 70% 或回合阈值：选择完整旧回合生成摘要
+→ 约 90%：继续移除完整旧回合
+→ 紧急裁剪仍过大：在请求 Provider 前停止
+```
+
+回合以 `HumanMessage` 为起点，随后产生的 `AIMessage(tool_calls)`、`ToolMessage` 和最终 `AIMessage` 属于同一组。收缩时处理完整旧组，而不是任意按消息数量切片。
 
 这样避免出现：
 
@@ -296,11 +327,10 @@ HumanMessage
 
 关键代码位置：
 
-- [context.py](../../cyberclaw/core/context.py)：12～56 行，按用户回合分组和裁剪；
-- [agent.py](../../cyberclaw/core/agent.py)：60～88 行，摘要生成和 `RemoveMessage`；
-- [agent.py](../../cyberclaw/core/agent.py)：92～127 行，读取画像并组装系统提示词；
-- [builtins.py](../../cyberclaw/core/tools/builtins.py)：116～130 行，`save_user_profile` 整文件覆盖；
-- [test_context_advanced.py](../../tests/test_context_advanced.py)：上下文分组、工具消息和边界测试。
+- [context.py](../../cyberclaw/core/context.py)：`ContextPolicy`、Token 估算、完整回合切分、ToolResult 裁剪和 `build_context_plan`；
+- [agent.py](../../cyberclaw/core/agent.py)：Context Plan 消费、摘要生成、溢出阻断和动态系统提示词；
+- [builtins.py](../../cyberclaw/core/tools/builtins.py)：`save_user_profile` 整文件覆盖；
+- [test_context_advanced.py](../../tests/test_context_advanced.py)：上下文分组、Token 水位、分层动作、协议配对与溢出测试。
 
 ### 7.3 面试追问
 
@@ -310,11 +340,11 @@ HumanMessage
 
 **问：为什么摘要模型没有绑定工具？**
 
-答：摘要是一个纯文本转换任务。代码使用原始 `llm.invoke()` 而非 `llm_with_tools`，避免摘要过程中意外进入工具循环。
+答：摘要是纯文本转换任务。代码使用未绑定工具的 `llm`，但仍通过统一 `provider.invoke_model()` 调用，既避免摘要意外进入工具循环，也复用超时、错误分类和有限重试。
 
 **问：当前记忆方案有什么问题？**
 
-答：裁剪按回合数而不是 Token 预算触发；摘要文本只有 150 字上限，没有结构化字段；用户画像由模型整文件覆盖，没有冲突检测、版本、确认和删除流程。这是轻量原型，不是完整 Memory Service。
+答：当前 Token 估算没有完整计入动态 system prompt、工具 schema 和输出预留；摘要文本仍只有 Prompt 中的 150 字要求，没有程序级结构化 schema 和确定性失败降级；摘要后旧消息会从 checkpoint 删除，尚无完整 transcript/artifact store；用户画像仍由模型整文件覆盖，没有冲突、确认和删除流程。因此它是分层 Context 基础，不是完整 Memory Service。
 
 ---
 
@@ -467,7 +497,7 @@ target_path.relative_to(base_dir)
 
 ### 9.5 为什么运行中的 Agent 不自动热更新
 
-`ToolNode` 和模型的工具 Schema 在图创建时已经绑定。即使 loader 重新扫描并返回新工具，旧图仍持有旧的工具快照。当前选择显式重启/重建图，以获得确定的版本边界，而不是在一轮调用中途替换工具集合。
+Tool Registry 快照、Executor 和模型工具 Schema 在图创建时已经绑定。即使 loader 重新扫描并返回新工具，旧图仍持有旧快照。当前选择显式重启/重建图，以获得确定的版本边界，而不是在一轮调用中途替换工具集合。
 
 ### 9.6 边界
 
@@ -483,10 +513,10 @@ target_path.relative_to(base_dir)
 
 当前记录 4 类有限元数据事件：
 
-- `llm_input`：发送给模型的消息数量；
-- `tool_call`：工具名称及脱敏后的参数；
+- `llm_input`：消息数量、近似 Context Token、裁剪动作和 ToolResult 裁剪数量；
+- `tool_call`：工具名称、来源、风险及脱敏后的参数；
 - `tool_result`：工具名与结果字符数，不记录正文；
-- `ai_message`：回答字符数，不记录正文。
+- `ai_message`：调用阶段、回答字符数、tool-call 数、Provider attempts 和可用 Token usage，不记录正文。
 
 这不是完整 Trace，也不能重放整个 Agent 决策过程。
 
@@ -528,7 +558,7 @@ target_path.relative_to(base_dir)
 
 ---
 
-## 11. 亮点六：有界单消费者队列与 Graceful Shutdown
+## 11. 亮点六：有界运行时、取消修复与受控并行
 
 ### 11.1 为什么使用单消费者
 
@@ -555,15 +585,33 @@ target_path.relative_to(base_dir)
 
 每次 `queue.get()` 后都在 `finally` 中调用 `task_done()`，包括 STOP_TASK，因此 `Queue.join()` 不会因为异常分支永久等待。
 
+### 11.3 每任务运行预算
+
+`AgentRunLimits` 为每个最新 `HumanMessage` 开始的新任务独立计数：
+
+- `max_model_calls`：限制 Agent 主循环模型响应次数；
+- `max_tool_calls`：限制已处理和当前待处理的工具请求；
+- `recursion_limit`：限制 LangGraph 节点推进次数，并要求至少为模型上限的两倍加一。
+
+预算由程序执行，不依赖 Prompt 要求模型自行停止。超出模型预算时 agent 节点返回停止消息；超出工具预算时 Executor 为超额调用逐一生成 `BUDGET_EXCEEDED` ToolResult，继续保持 tool-call/result 配对。
+
+### 11.4 取消后的协议修复
+
+用户取消运行时，已产生的 `AIMessage(tool_calls)` 可能还没有对应 `ToolMessage`。`backfill_interrupted_tool_calls()` 从 checkpoint 读取状态，找出未配对 ID，并幂等补写 `INTERRUPTED` ToolResult，避免下一次 Provider 请求收到残缺协议。它只能修复消息状态，不能保证已经进入同步线程或外部程序的副作用立即停止。
+
+### 11.5 工具受控并行
+
+Executor 只并行同一模型响应中连续且显式声明 `concurrent_safe=True` 的工具，最大 4 个工作线程；未知工具、写操作和其他默认不安全工具形成串行屏障。结果始终按模型原始调用顺序回填，而不是按线程完成顺序回填。当前只有时间、计算器和模型信息查询声明为并发安全。
+
 代码位置：
 
-- [entry/main.py](../../entry/main.py)：91～100 行，队列、checkpoint 和固定 thread；
-- [entry/main.py](../../entry/main.py)：136～175 行，单消费者和 `task_done()`；
-- [entry/main.py](../../entry/main.py)：177～238 行，输入、producer 和关闭入口；
-- [runtime.py](../../cyberclaw/core/runtime.py)：6～51 行，停止哨兵、排空、超时和 queue accounting；
-- [test_runtime.py](../../tests/test_runtime.py)：正常排空、超时、consumer 先失败三类测试。
+- [entry/main.py](../../entry/main.py)：单消费者、取消回填和 shutdown 入口；
+- [runtime.py](../../cyberclaw/core/runtime.py)：`AgentRunLimits`、当前任务计数、停止哨兵和 queue accounting；
+- [agent.py](../../cyberclaw/core/agent.py)：模型预算检查与 `backfill_interrupted_tool_calls`；
+- [executor.py](../../cyberclaw/core/tools/executor.py)：工具预算、串行屏障和并行分组；
+- [test_runtime.py](../../tests/test_runtime.py)、[test_tool_executor.py](../../tests/test_tool_executor.py)：预算、并行、中断和关闭测试。
 
-### 11.3 面试追问
+### 11.6 面试追问
 
 **问：为什么先停 producer，再发 sentinel？**
 
@@ -577,9 +625,17 @@ target_path.relative_to(base_dir)
 
 答：不是。队列的 producer 可以并发等待，但 Agent 执行刻意串行。项目没有多个 Agent worker，也没有任务 DAG 或多 Agent 协作。
 
+**问：为什么不直接并行一次响应里的全部工具？**
+
+答：多个工具可能读写同一资源，完成顺序也可能影响后续语义。CyberClaw 采用默认串行、显式放行：只有元数据确认无共享副作用的连续调用才组成并行批次，其他调用会打断批次并形成顺序屏障。
+
+**问：Provider 内部重试会不会消耗模型调用预算？**
+
+答：当前 `max_model_calls` 统计 Agent 主循环产生的模型响应，Provider 的底层尝试次数单独记录为 `provider_attempts`。一次逻辑模型调用发生超时重试时不会重复推进 LangGraph，但远端可能已经接收原请求，因此仍可能产生额外 Token 消耗。
+
 ---
 
-## 12. 亮点七：显式配置加载与 Provider 工厂
+## 12. 亮点七：显式配置与统一 Provider 调用边界
 
 ### 12.1 修复的问题
 
@@ -600,15 +656,23 @@ target_path.relative_to(base_dir)
 - Provider 参数优先级是“显式参数优先，环境变量兜底”；
 - `other` Provider 强制要求合法 `http/https` Base URL；
 - Anthropic/Ollama 可选依赖缺失时给出明确错误。
+- `ProviderRetryPolicy` 统一最大尝试次数和请求超时，默认 3 次尝试、60 秒；
+- OpenAI-compatible 与 Anthropic 关闭 SDK 内置重试，避免 SDK × 项目策略形成乘法重试；
+- 429、408/超时、连接失败和 5xx 才执行有限指数退避，鉴权、其他 4xx 和未知错误立即失败；
+- `ProviderInvocationError` 只暴露安全分类与尝试次数，不把远端原始错误正文直接显示给用户；
+- 主 Agent、上下文摘要和配置探测均经过 `invoke_model()`；
+- Provider 返回 usage 时，统一提取 input/output/total Token，并与实际 attempts 一起写入现有 `ai_message` 审计事件。
 
 代码位置：
 
 - [environment.py](../../cyberclaw/core/environment.py)：6～35 行；
 - [config.py](../../cyberclaw/core/config.py)：7～28 行；
-- [provider.py](../../cyberclaw/core/provider.py)：29～126 行；
-- [cli.py](../../entry/cli.py)：31～160 行，配置向导；173～200 行，启动前校验；
+- [provider.py](../../cyberclaw/core/provider.py)：调用策略、错误分类、统一 invoke、usage 提取与 Provider 工厂；
+- [agent.py](../../cyberclaw/core/agent.py)：主 Agent 和摘要调用接入；
+- [cli.py](../../entry/cli.py)：配置探测与启动前策略校验；
+- [monitor.py](../../entry/monitor.py)：attempts 与可用 Token 展示；
 - [test_config_and_skill_loader.py](../../tests/test_config_and_skill_loader.py)：无导入副作用、UTF-8 BOM 和错误编码测试；
-- [test_provider.py](../../tests/test_provider.py)：学校兼容端点、参数优先级、URL 和缺失配置测试。
+- [test_provider.py](../../tests/test_provider.py)：学校兼容端点、配置、瞬时/永久错误、退避、超时、attempts 和 usage 测试。
 
 ### 12.3 学校 API 如何接入
 
@@ -624,6 +688,20 @@ OPENAI_API_KEY=<本地密钥>
 Provider 名称描述的是“调用协议/适配器”，模型名才描述实际模型。学校托管的 DeepSeek/Qwen 等模型不等于 DeepSeek/OpenAI 官方 Provider。
 
 面试中不要展示 `.env` 内容、API Key 或真实密钥截图。
+
+### 12.4 面试追问
+
+**问：为什么不能直接使用 SDK 默认重试？**
+
+答：不同 SDK 的默认次数和错误范围不一致，而且外层再重试会让总请求数形成乘法。项目关闭 OpenAI-compatible/Anthropic 的 SDK 重试，把策略集中在一个可测试边界中，确保最大尝试次数、错误分类和审计语义一致。
+
+**问：为什么不重试所有异常？**
+
+答：鉴权失败、参数错误等永久错误重复请求不会恢复，只会增加延迟和消耗；未知错误也默认不重试，避免把程序 bug 当成网络抖动。当前只重试通常具有瞬时性的限流、请求超时、连接和服务端错误。
+
+**问：Token usage 等于费用吗？**
+
+答：不等于。项目只规范化 Provider 实际返回的 Token 数；学校模型的价格和计费规则未知，因此没有内置价格表，也不声称能够准确计算费用。Ollama 当前适配器也不保证统一请求超时参数。
 
 ---
 
@@ -661,10 +739,10 @@ Heartbeat 是随 `cyberclaw run` 生命周期运行的后台协程：每 10 秒�
 当前版本结果：
 
 ```text
-95 passed, 1 skipped, 46 subtests passed
+143 passed, 1 skipped, 46 subtests passed
 ```
 
-这句话的准确含义是“当前整个仓库的回归套件结果”，不是“我从零编写了全部 95 个测试”。
+这句话的准确含义是“当前整个仓库的回归套件结果”，不是“我从零编写了全部 143 个测试”。本次 CoreCoder 阶段还完成了 `cyberclaw --help` 检查，以及现有 `.env` + 学校 OpenAI-compatible API 的最小真实 Agent 调用，实际获得 `AIMessage`、1 次 attempt 和可用 usage。
 
 ### 14.2 测试分层
 
@@ -674,9 +752,11 @@ Heartbeat 是随 `cyberclaw run` 生命周期运行的后台协程：每 10 秒�
 | [test_sandbox_tools.py](../../tests/test_sandbox_tools.py) | 路径逃逸、symlink、原子写、程序白名单、环境隔离、输出边界 |
 | [test_lazy_loader.py](../../tests/test_lazy_loader.py) | Skill 类型、分页、会话状态、版本失效、LRU、重名和入口逃逸 |
 | [test_logger.py](../../tests/test_logger.py) | 脱敏、背压、写失败、生命周期 |
-| [test_runtime.py](../../tests/test_runtime.py) | producer/consumer 关闭顺序和队列计数 |
-| [test_provider.py](../../tests/test_provider.py) | OpenAI-compatible 学校端点与配置错误 |
-| [test_context_advanced.py](../../tests/test_context_advanced.py) | 完整回合裁剪和工具消息协议 |
+| [test_runtime.py](../../tests/test_runtime.py) | 运行预算、producer/consumer 关闭顺序和队列计数 |
+| [test_tool_registry.py](../../tests/test_tool_registry.py) | 工具来源、风险、不可变快照、冲突和保守默认值 |
+| [test_tool_executor.py](../../tests/test_tool_executor.py) | 结构化结果、预算、受控并行、中断回填和 Agent 集成 |
+| [test_provider.py](../../tests/test_provider.py) | 学校兼容端点、分类重试、超时、attempts 与 usage |
+| [test_context_advanced.py](../../tests/test_context_advanced.py) | Token 水位、完整回合裁剪、工具消息协议和溢出保护 |
 | [test_documentation.py](../../tests/test_documentation.py) | README 能力声明和打包契约 |
 
 ### 14.3 为什么大部分测试不调用真实模型
@@ -693,7 +773,7 @@ Heartbeat 是随 `cyberclaw run` 生命周期运行的后台协程：每 10 秒�
 
 **1. 请用一分钟介绍这个项目。**
 
-CyberClaw 是一个基于 LangGraph 的本地 Agent Harness。我是在开源原型上做二次开发，而不是从零声明原创。它用 StateGraph 组织模型和工具循环，用 SQLite checkpoint 保存当前会话状态，同时提供用户画像、会话摘要、Markdown Skill、CLI 定时任务和 JSONL Monitor。我重点解决了原型的工程边界问题，包括 `eval` 计算器、路径逃逸、非原子写入、Shell 凭据继承、Skill 版本漂移、日志泄密以及异步退出竞态，并用当前 95 passed、46 subtests 的回归套件验证。
+CyberClaw 是一个基于 LangGraph 的本地 Agent Harness。我是在开源原型上二次开发，而不是从零声明原创。除路径、Shell、Skill、日志和退出等工程加固外，我还设计了实例级 Tool Registry、统一 Executor 与结构化 ToolResult，并加入每任务运行预算、中断协议回填、受控工具并行、分层 Context 和统一 Provider 重试/usage 边界。当前通过 `143 passed、1 skipped、46 subtests`，并使用原有学校 API 完成真实 Agent 冒烟。
 
 **2. 为什么说它是 Agent Harness，而不只是聊天机器人？**
 
@@ -711,7 +791,7 @@ CyberClaw 只有受限工作区文件读写和可选程序执行，没有代码�
 
 **5. 这个项目中最有技术含量的个人贡献是什么？**
 
-我会重点讲两个：一是把本地文件和程序工具从“靠提示词约束”改成代码强制的防御式边界；二是把 Skill 从简单懒加载改造成版本化 `help → run` 协议，确保说明书、执行入口和会话阅读状态绑定。两者都有正常路径、恶意输入和版本变化测试。
+我会重点讲两个层次：第一层是安全副作用边界，包括规范路径、受限 Shell 和版本化 Skill；第二层是 Agent 运行时不变量，包括 Tool Contract/Registry/Executor、运行预算、中断 ToolResult 回填、元数据驱动并行、分层 Context 和 Provider 分类重试。前者说明我能发现具体漏洞，后者说明我能把跨工具、消息和模型调用的约束抽成可测试架构。
 
 **6. 最难定位的 bug 是什么？**
 
@@ -719,7 +799,7 @@ CyberClaw 只有受限工作区文件读写和可选程序执行，没有代码�
 
 **7. 为什么代码变多是合理的？**
 
-增加的代码主要来自原型中被省略的边界处理和确定性测试，而不是无关功能。例如一个 `subprocess.run` 扩展成启用开关、程序白名单、参数校验、最小环境、超时和输出上限。面试时应强调每层约束解决的具体风险，同时承认下一阶段应该抽取统一 Tool Contract/Policy，避免继续在单文件堆叠。
+增加的代码主要来自原型中被省略的边界处理和确定性测试，而不是无关功能。例如工具能力被拆成契约、Registry 和 Executor，是为了让风险、超时、预算、并发和结果分类只有一套语义，而不是继续散落在 Agent 节点中。下一阶段应复用这些接口加入 Policy/Approval/Hook，避免为新能力再建平行执行链。
 
 **8. 你如何保证没有破坏原有本地配置？**
 
@@ -773,11 +853,11 @@ checkpointer 用 `thread_id` 定位同一会话的图状态。当前 CLI 固定�
 
 **19. 当前最大的架构不足是什么？**
 
-工具边界分散在各实现文件中，还没有统一的 `ToolSpec/ToolResult/Registry/Policy`；会话固定；观测只有 4 类事件，没有 run/tool-call ID；调度只在 CLI 内运行。下一阶段应先抽象 Tool Runtime，再考虑 MCP，而不是继续盲目增加工具。
+ToolSpec、ToolResult、Registry 和 Executor 已经统一，但还没有完整 Policy/Approval/Hook；CLI 会话仍固定；观测只有扩展后的 4 类有限事件，没有 run/span 分层 ID；Context 也没有完整 transcript/artifact store；调度仍只在 CLI 内运行。下一阶段应补齐这些 Harness 边界，再考虑 MCP。
 
 **20. 如果继续改进，你会先做什么？**
 
-先建立统一 Tool Contract、Registry 和 Policy/Approval 管线，让内置工具与 Skill 走同一执行入口，并补结构化错误和统一 trace id。完成后再接入一个真实 MCP server，用它验证外部工具同样不能绕过策略。不会优先做多 Agent，因为那会先放大现有状态和权限问题。
+下一步参考 learn-claude-code，在现有 Contract/Registry/Executor 上增加参数规范化、Hard Deny、上下文规则、用户审批和 Hook Pipeline；随后补 Session/typed event/trace。等 Registry + Policy + 生命周期稳定后，再接入真实 MCP server 验证外部工具不能绕过策略。不会优先做多 Agent，因为那会先放大会话和权限问题。
 
 ---
 
@@ -789,11 +869,11 @@ checkpointer 用 `thread_id` 定位同一会话的图状态。当前 CLI 固定�
 
 ### 16.2 行动（约 2 分钟）
 
-> 我没有一次性重写，而是用八个独立提交逐层改造。首先把动态计算改为 AST 白名单，路径校验改为 canonical path + `relative_to`，文件覆盖改为临时文件原子替换。然后把程序执行改为默认关闭、显式 allowlist、argv 直启和最小子进程环境。Skill 侧区分默认只读和显式可执行类型，要求先分页读完说明，并把 manifest 和入口文件的 SHA-256 摘要绑定到会话状态，文件变化后旧状态失效。运行时用单消费者有界队列统一用户输入和 Heartbeat，明确先停 producer、再 sentinel、再 join 的退出顺序。最后把日志改成有界、脱敏、正文不落盘并可幂等关闭，同时消除 `.env` 和目录创建的 import-time side effect。
+> 我没有一次性重写，而是分两阶段做 15 个实现提交。第一阶段修复动态计算、路径、文件、Shell、Skill、日志、退出和配置边界。第二阶段参考 CoreCoder 的运行时思想，在保留 LangGraph 的前提下引入 ToolSpec/Registry 和统一 Executor，把错误、超时、预算与 ToolMessage 协议集中处理；再加入每任务模型/工具/递归预算、取消后的 tool-call 配对修复，以及只允许显式安全工具并行的串行屏障。上下文从固定回合扩展为近似 Token 分层处理，模型调用也统一经过分类重试、显式超时和 usage 观测边界。
 
 ### 16.3 结果与反思（约 30 秒）
 
-> 当前版本继续兼容原有 Windows `.venv`、学校 OpenAI-compatible API 和 `.env`，离线回归为 95 passed、1 skipped、46 subtests passed。这个版本的定位仍是学习型本地 Agent Harness，不宣称 OS 沙盒、MCP 或多会话。下一步最有价值的是统一 Tool Registry/Policy，而不是继续堆功能。
+> 当前版本继续兼容原有 Windows `.venv`、学校 OpenAI-compatible API 和 `.env`，离线回归为 143 passed、1 skipped、46 subtests passed，并完成真实 Agent 调用。它仍不宣称 OS 沙盒、MCP、多会话或完整 Policy；下一步是在现有 Tool Runtime 上借鉴 learn-claude-code 补 Permission、Approval、Hook 和 Session/Event，而不是继续堆工具。
 
 ---
 
@@ -810,7 +890,7 @@ checkpointer 用 `thread_id` 定位同一会话的图状态。当前 CLI 固定�
 | 永久记忆/持续学习 | 画像整文件覆盖，摘要会丢失细节 | 用户画像与近期会话摘要 |
 | 高可靠任务调度 | 只在 CLI 内轮询 JSON | CLI-scoped Heartbeat 定时任务 |
 | 提升性能 80%/99% | 没有可复现 benchmark | 只写测试数量、边界用例和可验证行为 |
-| 95 个测试全部由我编写 | 数字是整个仓库套件 | 扩充并维护回归套件，当前结果为…… |
+| 143 个测试全部由我编写 | 数字是整个仓库套件 | 扩充并维护回归套件，当前结果为…… |
 
 ---
 
@@ -821,29 +901,34 @@ checkpointer 用 `thread_id` 定位同一会话的图状态。当前 CLI 固定�
 1. [entry/main.py](../../entry/main.py)
 2. [agent.py](../../cyberclaw/core/agent.py)
 3. [context.py](../../cyberclaw/core/context.py)
-4. [tools/base.py](../../cyberclaw/core/tools/base.py)
+4. [provider.py](../../cyberclaw/core/provider.py)
 
 第二遍：重点准备个人贡献。
 
-1. [sandbox_tools.py](../../cyberclaw/core/tools/sandbox_tools.py)
-2. [skill_loader.py](../../cyberclaw/core/skill_loader.py)
-3. [logger.py](../../cyberclaw/core/logger.py)
+1. [contracts.py](../../cyberclaw/core/tools/contracts.py)
+2. [registry.py](../../cyberclaw/core/tools/registry.py)
+3. [executor.py](../../cyberclaw/core/tools/executor.py)
 4. [runtime.py](../../cyberclaw/core/runtime.py)
-5. [environment.py](../../cyberclaw/core/environment.py)
-6. [provider.py](../../cyberclaw/core/provider.py)
+5. [sandbox_tools.py](../../cyberclaw/core/tools/sandbox_tools.py)
+6. [skill_loader.py](../../cyberclaw/core/skill_loader.py)
+7. [logger.py](../../cyberclaw/core/logger.py)
+8. [environment.py](../../cyberclaw/core/environment.py)
 
 第三遍：用测试证明设计。
 
 1. [test_sandbox_tools.py](../../tests/test_sandbox_tools.py)
 2. [test_lazy_loader.py](../../tests/test_lazy_loader.py)
-3. [test_logger.py](../../tests/test_logger.py)
-4. [test_runtime.py](../../tests/test_runtime.py)
-5. [test_provider.py](../../tests/test_provider.py)
+3. [test_tool_registry.py](../../tests/test_tool_registry.py)
+4. [test_tool_executor.py](../../tests/test_tool_executor.py)
+5. [test_context_advanced.py](../../tests/test_context_advanced.py)
+6. [test_runtime.py](../../tests/test_runtime.py)
+7. [test_provider.py](../../tests/test_provider.py)
+8. [test_logger.py](../../tests/test_logger.py)
 
 最后复习贡献提交：
 
 ```powershell
-git log --oneline v0.1.0：开源CyberClaw带学习笔记..v0.1.1：CyberClaw项目修复与完善
+git log --oneline v0.1.0：开源CyberClaw带学习笔记..05f49d9
 git show <commit-id>
 ```
 
@@ -856,6 +941,10 @@ git show <commit-id>
 - [ ] 根据目标岗位选择 Agent 版、Python 版或安全版描述；
 - [ ] 简历明确写“开源项目二次开发”，不模糊贡献边界；
 - [ ] 能白板画出 `agent → tools → agent` 与单消费者队列；
+- [ ] 能解释 ToolSpec、Registry、Executor、ToolResult 和 ToolMessage 的职责边界；
+- [ ] 能解释运行预算、中断回填和 concurrent-safe 串行屏障；
+- [ ] 能解释 Context 的 50%/70%/90% 分层策略及其估算边界；
+- [ ] 能解释哪些 Provider 错误会重试，以及为什么 usage 不等于费用；
 - [ ] 能解释 checkpoint、summary、profile 三者区别；
 - [ ] 能解释路径规范化、AST 白名单、原子替换和最小环境；
 - [ ] 能解释 Skill digest 为什么解决版本漂移，而不是人工审批；
