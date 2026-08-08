@@ -8,6 +8,7 @@ from langchain_core.tools import tool
 
 from cyberclaw.core.tools import (
     ToolExecutorNode,
+    ToolPolicyEngine,
     ToolProtocolError,
     ToolRegistry,
     ToolResultStatus,
@@ -203,6 +204,39 @@ class TestToolExecutorResultClassification(unittest.TestCase):
 
         self.assertEqual(result.status, ToolResultStatus.SUCCESS)
         self.assertEqual(result.content, "ok:session-42")
+
+    def test_policy_deny_blocks_tool_before_invocation(self):
+        _execution_order.clear()
+        executor = ToolExecutorNode(
+            _registry(ordered_tool),
+            policy=ToolPolicyEngine(denied_tools={"ordered_tool"}),
+        )
+
+        result = executor.execute_call(
+            _call("ordered_tool", {"value": "blocked"}),
+            _config(),
+        )
+
+        self.assertEqual(_execution_order, [])
+        self.assertEqual(result.status, ToolResultStatus.PERMISSION_DENIED)
+        self.assertEqual(result.error_type, "ToolPolicyDenied")
+        self.assertEqual(result.metadata["policy"]["behavior"], "deny")
+        self.assertIn("invocation_fingerprint", result.metadata)
+
+    def test_policy_ask_fails_closed_without_an_approval(self):
+        executor = ToolExecutorNode(
+            _registry(echo_tool),
+            policy=ToolPolicyEngine(approval_tools={"echo_tool"}),
+        )
+
+        result = executor.execute_call(
+            _call("echo_tool", {"value": "confirm"}),
+            _config(),
+        )
+
+        self.assertEqual(result.status, ToolResultStatus.PERMISSION_DENIED)
+        self.assertEqual(result.error_type, "ToolApprovalRequired")
+        self.assertEqual(result.metadata["policy"]["behavior"], "ask")
 
 
 class TestToolExecutorNodeProtocol(unittest.TestCase):
@@ -427,6 +461,58 @@ class TestToolExecutorNodeProtocol(unittest.TestCase):
 
 
 class TestToolExecutorGraphIntegration(unittest.TestCase):
+    @patch("cyberclaw.core.agent.audit_logger.log_event", return_value=True)
+    @patch("cyberclaw.core.agent.provider.get_provider")
+    def test_agent_graph_cannot_bypass_tool_policy(
+        self,
+        mock_get_provider,
+        _mock_log_event,
+    ):
+        from cyberclaw.core.agent import create_agent_app
+
+        _execution_order.clear()
+        bound_model = Mock()
+        bound_model.invoke.side_effect = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call(
+                        "ordered_tool",
+                        {"value": "must-not-run"},
+                        "denied-call",
+                    )
+                ],
+            ),
+            AIMessage(content="denied safely"),
+        ]
+        model = Mock()
+        model.bind_tools.return_value = bound_model
+        mock_get_provider.return_value = model
+
+        app = create_agent_app(
+            tools=[ordered_tool],
+            tool_policy=ToolPolicyEngine(denied_tools={"ordered_tool"}),
+        )
+        result = app.invoke(
+            {
+                "messages": [HumanMessage(content="run blocked tool")],
+                "summary": "",
+            },
+            config=_config("policy-thread"),
+        )
+
+        tool_messages = [
+            message
+            for message in result["messages"]
+            if isinstance(message, ToolMessage)
+        ]
+        self.assertEqual(_execution_order, [])
+        self.assertEqual(len(tool_messages), 1)
+        self.assertEqual(
+            tool_messages[0].artifact["cyberclaw_tool_result"]["status"],
+            "permission_denied",
+        )
+
     @patch("cyberclaw.core.agent.audit_logger.log_event", return_value=True)
     @patch("cyberclaw.core.agent.provider.get_provider")
     def test_model_budget_resets_for_each_new_user_turn(

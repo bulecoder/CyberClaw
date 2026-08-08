@@ -22,6 +22,7 @@ from .logger import audit_logger
 from .runtime import AgentRunLimits, count_current_turn_model_calls
 from .tools import (
     ToolExecutorNode,
+    ToolPolicyEngine,
     ToolRegistry,
     ToolRisk,
     ToolSource,
@@ -99,6 +100,7 @@ def create_agent_app(
     run_limits: AgentRunLimits | None = None,
     context_policy: ContextPolicy | None = None,
     provider_policy: provider.ProviderRetryPolicy | None = None,
+    tool_policy: ToolPolicyEngine | None = None,
 ):
     limits = run_limits or AgentRunLimits.from_env()
     active_context_policy = context_policy or ContextPolicy.from_env()
@@ -109,6 +111,7 @@ def create_agent_app(
     tool_node = ToolExecutorNode(
         registry,
         max_tool_calls=limits.max_tool_calls,
+        policy=tool_policy,
     )
 
     llm = provider.get_provider(

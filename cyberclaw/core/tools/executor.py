@@ -14,6 +14,14 @@ from pydantic.v1 import ValidationError as ValidationErrorV1
 
 from ..runtime import count_current_turn_tool_calls
 from .contracts import ToolMessageContent, ToolResult, ToolResultStatus
+from .policy import (
+    ToolArgumentsNormalizationError,
+    ToolInvocation,
+    ToolPolicyBehavior,
+    ToolPolicyDecision,
+    ToolPolicyEngine,
+    normalize_tool_invocation,
+)
 from .registry import ToolRegistry
 
 
@@ -118,11 +126,13 @@ class ToolExecutorNode:
         registry: ToolRegistry,
         *,
         max_tool_calls: int | None = None,
+        policy: ToolPolicyEngine | None = None,
     ) -> None:
         if max_tool_calls is not None and max_tool_calls < 0:
             raise ValueError("max_tool_calls 不能小于 0")
         self._registry = registry.snapshot()
         self._max_tool_calls = max_tool_calls
+        self._policy = policy or ToolPolicyEngine()
 
     @property
     def registry(self) -> ToolRegistry:
@@ -132,17 +142,36 @@ class ToolExecutorNode:
     def max_tool_calls(self) -> int | None:
         return self._max_tool_calls
 
-    def _metadata(self, tool_name: str, duration_ms: float) -> dict[str, Any]:
+    @property
+    def policy(self) -> ToolPolicyEngine:
+        return self._policy
+
+    def _metadata(
+        self,
+        tool_name: str,
+        duration_ms: float,
+        *,
+        invocation: ToolInvocation | None = None,
+        decision: ToolPolicyDecision | None = None,
+    ) -> dict[str, Any]:
         spec = self._registry.get(tool_name)
         if spec is None:
             return {"duration_ms": round(duration_ms, 3)}
-        return {
+        metadata = {
             "source": spec.source.value,
             "risk": spec.risk.value,
             "read_only": spec.read_only,
             "concurrent_safe": spec.concurrent_safe,
             "duration_ms": round(duration_ms, 3),
         }
+        if invocation is not None:
+            metadata["invocation_fingerprint"] = invocation.fingerprint
+        if decision is not None:
+            metadata["policy"] = {
+                "behavior": decision.behavior.value,
+                "rule_id": decision.rule_id,
+            }
+        return metadata
 
     def execute_call(
         self,
@@ -170,8 +199,8 @@ class ToolExecutorNode:
                 metadata={"available_tool_count": len(self._registry.names)},
             )
 
-        args = call.get("args", {})
-        if not isinstance(args, dict):
+        raw_args = call.get("args", {})
+        if not isinstance(raw_args, dict):
             return ToolResult(
                 tool_call_id=call_id,
                 tool_name=tool_name,
@@ -180,6 +209,52 @@ class ToolExecutorNode:
                 error_type="InvalidArgumentShape",
                 metadata=self._metadata(tool_name, 0.0),
             )
+
+        try:
+            invocation = normalize_tool_invocation(
+                call_id=call_id,
+                tool_name=spec.name,
+                arguments=raw_args,
+            )
+        except ToolArgumentsNormalizationError:
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=tool_name,
+                status=ToolResultStatus.INVALID_ARGUMENTS,
+                content=(
+                    "工具参数必须是可规范化的 JSON 对象，"
+                    "请根据工具 Schema 修正参数。"
+                ),
+                error_type="ToolArgumentsNormalizationError",
+                metadata=self._metadata(tool_name, 0.0),
+            )
+
+        decision = self._policy.decide(spec, invocation, config)
+        if decision.behavior is not ToolPolicyBehavior.ALLOW:
+            requires_approval = decision.behavior is ToolPolicyBehavior.ASK
+            return ToolResult(
+                tool_call_id=call_id,
+                tool_name=spec.name,
+                status=ToolResultStatus.PERMISSION_DENIED,
+                content=(
+                    f"需要用户确认：{decision.reason}。"
+                    if requires_approval
+                    else f"策略拒绝：{decision.reason}。"
+                ),
+                error_type=(
+                    "ToolApprovalRequired"
+                    if requires_approval
+                    else "ToolPolicyDenied"
+                ),
+                metadata=self._metadata(
+                    tool_name,
+                    0.0,
+                    invocation=invocation,
+                    decision=decision,
+                ),
+            )
+
+        args = dict(invocation.arguments)
 
         started = time.perf_counter()
         try:
@@ -193,7 +268,12 @@ class ToolExecutorNode:
                 config=config,
             )
             duration_ms = (time.perf_counter() - started) * 1000
-            metadata = self._metadata(tool_name, duration_ms)
+            metadata = self._metadata(
+                tool_name,
+                duration_ms,
+                invocation=invocation,
+                decision=decision,
+            )
 
             if isinstance(response, ToolMessage):
                 content = response.content
@@ -230,7 +310,12 @@ class ToolExecutorNode:
                     f"{_validation_summary(exc)}"
                 ),
                 error_type=type(exc).__name__,
-                metadata=self._metadata(tool_name, duration_ms),
+                metadata=self._metadata(
+                    tool_name,
+                    duration_ms,
+                    invocation=invocation,
+                    decision=decision,
+                ),
             )
         except PermissionError as exc:
             duration_ms = (time.perf_counter() - started) * 1000
@@ -240,7 +325,12 @@ class ToolExecutorNode:
                 status=ToolResultStatus.PERMISSION_DENIED,
                 content="权限拒绝：该操作不符合当前工具或工作区策略。",
                 error_type=type(exc).__name__,
-                metadata=self._metadata(tool_name, duration_ms),
+                metadata=self._metadata(
+                    tool_name,
+                    duration_ms,
+                    invocation=invocation,
+                    decision=decision,
+                ),
             )
         except TimeoutError:
             duration_ms = (time.perf_counter() - started) * 1000
@@ -250,7 +340,12 @@ class ToolExecutorNode:
                 status=ToolResultStatus.TIMEOUT,
                 content=f"工具 '{tool_name}' 执行超时。",
                 error_type="TimeoutError",
-                metadata=self._metadata(tool_name, duration_ms),
+                metadata=self._metadata(
+                    tool_name,
+                    duration_ms,
+                    invocation=invocation,
+                    decision=decision,
+                ),
             )
         except Exception as exc:
             duration_ms = (time.perf_counter() - started) * 1000
@@ -260,7 +355,12 @@ class ToolExecutorNode:
                 status=ToolResultStatus.EXECUTION_ERROR,
                 content=f"工具 '{tool_name}' 执行失败（{type(exc).__name__}）。",
                 error_type=type(exc).__name__,
-                metadata=self._metadata(tool_name, duration_ms),
+                metadata=self._metadata(
+                    tool_name,
+                    duration_ms,
+                    invocation=invocation,
+                    decision=decision,
+                ),
             )
 
     def __call__(
